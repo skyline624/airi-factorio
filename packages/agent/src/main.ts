@@ -1,17 +1,21 @@
 import type { AiriBridge } from './airi/bridge'
 import type { MessageHandler } from './llm/message-handler'
-import type { ChatMessage, PlayerEventMessage, StdoutMessage } from './parser'
+import type { ChatMessage, LLMMessage, PlayerEventMessage, StdoutMessage } from './parser'
 import { Buffer } from 'node:buffer'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { env } from 'node:process'
 import { Format, setGlobalFormat, useLogg } from '@guiiai/logg'
 import { backOff } from 'exponential-backoff'
 import { client, v2FactorioConsoleCommandMessagePost, v2FactorioConsoleCommandRawPost } from 'factorio-rcon-api-client'
 import { connect } from 'it-ws'
 import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
-import { airiConfig, autonomousConfig, initEnv, rconClientConfig, wsClientConfig } from './config'
+import { airiConfig, autonomousConfig, initEnv, openaiConfig, rconClientConfig, wsClientConfig } from './config'
 import { createMessageHandler } from './llm/message-handler'
+import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
-import { parseChatMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
+import { parseChatMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 
 setGlobalFormat(Format.Pretty)
 const logger = useLogg('main').useGlobalConfig()
@@ -89,6 +93,60 @@ function enqueueAgentTask(task: () => Promise<void>): Promise<void> {
   return run
 }
 
+// Vision-backed decision: capture a screenshot via the connected client, send it with the
+// tick context to a vision model (e.g. gemma4), and parse its JSON action. Falls back to a
+// text-only request if no screenshot is available (headless server / no client connected).
+async function visionDecide(tickContent: string): Promise<LLMMessage | null> {
+  const shot = 'airi-auto-view.png'
+  try {
+    await v2FactorioConsoleCommandRawPost({ body: { input: `/c local p=game.get_player(1); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end` } })
+  }
+  catch { /* ignore screenshot dispatch errors */ }
+  await new Promise(resolve => setTimeout(resolve, 1500))
+
+  let imageUrl: string | undefined
+  try {
+    const pngPath = join(env.APPDATA ?? '', 'Factorio', 'script-output', shot)
+    imageUrl = `data:image/png;base64,${readFileSync(pngPath).toString('base64')}`
+  }
+  catch {
+    logger.warn('No screenshot available (is the client connected?) — deciding from text only')
+  }
+
+  const userContent = imageUrl
+    // eslint-disable-next-line ts/naming-convention -- `image_url` is the OpenAI vision API field name
+    ? [{ type: 'text', text: tickContent }, { type: 'image_url', image_url: { url: imageUrl } }]
+    : tickContent
+
+  const baseURL = openaiConfig.baseUrl || 'https://api.openai.com/v1'
+  try {
+    const response = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      // eslint-disable-next-line ts/naming-convention -- standard HTTP header names
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiConfig.apiKey || 'sk-no-key'}` },
+      body: JSON.stringify({
+        model: autonomousConfig.visionModel,
+        stream: false,
+        messages: [
+          { role: 'system', content: autonomousVisionPrompt },
+          { role: 'user', content: userContent },
+        ],
+      }),
+    })
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+    const content = data.choices?.[0]?.message?.content
+    if (!content) {
+      logger.error('Vision model returned no content')
+      return null
+    }
+    return parseLLMMessage(content)
+  }
+  catch (e: unknown) {
+    logger.withFields({ error: e instanceof Error ? e.message : String(e) }).error('Vision decision failed')
+    return null
+  }
+}
+
 async function main() {
   initEnv()
 
@@ -102,10 +160,18 @@ async function main() {
 
   // --- Autonomous play mode: the agent drives itself; no human task required. ---
   if (autonomousConfig.enabled) {
-    logger.withFields({ goal: autonomousConfig.goal }).log('Starting in AUTONOMOUS mode')
-    const autoHandler = await createMessageHandler(autonomousPrompt)
+    logger.withFields({ goal: autonomousConfig.goal, vision: autonomousConfig.visionEnabled }).log('Starting in AUTONOMOUS mode')
+    let decide: (tickContent: string) => Promise<LLMMessage | null>
+    if (autonomousConfig.visionEnabled) {
+      logger.withFields({ model: autonomousConfig.visionModel }).log('Autonomous VISION mode: a vision model sees the screen each turn')
+      decide = visionDecide
+    }
+    else {
+      const autoHandler = await createMessageHandler(autonomousPrompt)
+      decide = tickContent => autoHandler.handleMessage({ type: 'autonomousTick', content: tickContent })
+    }
     const controller = startAutonomousLoop({
-      handler: autoHandler,
+      decide,
       goal: autonomousConfig.goal,
       tickDelayMs: autonomousConfig.tickDelayMs,
       execute: async (commands) => {

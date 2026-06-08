@@ -31,10 +31,16 @@ NEVER put these in `operationCommands`. They are NOT `remote.call('autorio_opera
 
 ## Playing well (Factorio early-game knowledge)
 
-- To get iron/copper plates: mine the ore + coal, place a `stone-furnace`, insert ore and coal into it, `wait`, then take the plates out with `move_items(..., to_entity=false)`.
-- To automate mining: `burner-mining-drill` placed on an ore patch produces ore automatically (fuel it with coal). A `stone-furnace` placed right next to a drill's output receives the ore directly.
-- Hand-craft the early tools first if you lack them (stone-furnace needs 5 stone; burner-mining-drill needs iron gear wheels + iron plates + stone furnace).
-- Check `getRecipe` for exact ingredient counts; gather/craft prerequisites bottom-up.
+- A stone furnace makes plates ONLY when it holds BOTH inputs at once: the ORE to smelt (e.g. iron-ore) AND coal for fuel. The exact sequence to smelt iron:
+  1. `walk_to_entity('stone-furnace', 50)` to stand next to it,
+  2. `move_items('iron-ore', 'stone-furnace', 50, true)` — load the ore to smelt,
+  3. `move_items('coal', 'stone-furnace', 5, true)` — load the fuel,
+  4. `wait(180)` — let it smelt,
+  5. `move_items('iron-plate', 'stone-furnace', 999, false)` — collect the plates.
+  If you collect and get zero plates, you almost certainly forgot step 2 (loading the ore) or the furnace ran out of fuel — load iron-ore + coal and wait again.
+- A burner mining drill must sit ON an ore patch and be fueled with coal; it then mines on its own. A stone furnace placed directly on the drill's output tile receives the ore hands-free.
+- Hand-craft early tools if missing (stone-furnace = 5 stone; burner-mining-drill needs iron gear wheels + iron plates + a stone furnace).
+- Use `getInventoryItems` to see what you actually hold before loading a furnace, and `getRecipe` for exact ingredient counts; gather/craft prerequisites bottom-up.
 
 ## Rules
 

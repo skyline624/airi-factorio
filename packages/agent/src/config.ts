@@ -31,6 +31,8 @@ export const autonomousConfig: AutonomousConfig = {
   enabled: false,
   goal: 'Automate iron plate production: secure a small base, mine iron ore and coal, place burner mining drills on ore patches and stone furnaces next to them, fuel everything with coal, and accumulate at least 50 iron plates.',
   tickDelayMs: 1500,
+  visionEnabled: false,
+  visionModel: 'gemma4:31b-cloud',
 }
 
 export function initEnv() {
@@ -61,6 +63,8 @@ export function initEnv() {
   autonomousConfig.enabled = (env.AUTONOMOUS_MODE || 'false').trim().toLowerCase() === 'true'
   autonomousConfig.goal = (env.AUTONOMOUS_GOAL || autonomousConfig.goal).trim()
   autonomousConfig.tickDelayMs = Number.parseInt(env.AUTONOMOUS_TICK_DELAY_MS || '1500')
+  autonomousConfig.visionEnabled = (env.AUTONOMOUS_VISION || 'false').trim().toLowerCase() === 'true'
+  autonomousConfig.visionModel = (env.AUTONOMOUS_VISION_MODEL || 'gemma4:31b-cloud').trim()
 
   logger.withFields({ openaiConfig, airiConfig, autonomousConfig }).log('Environment variables initialized')
 }

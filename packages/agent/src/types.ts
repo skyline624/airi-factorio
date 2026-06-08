@@ -21,6 +21,10 @@ export interface AutonomousConfig {
   goal: string
   /** Delay (ms) between autonomous turns, to pace the LLM and let the world settle. */
   tickDelayMs: number
+  /** When true, capture a screenshot each turn so a vision model can see + decide. */
+  visionEnabled: boolean
+  /** Vision-capable model used when visionEnabled (e.g. gemma4:31b-cloud). */
+  visionModel: string
 }
 
 export interface AiriConfig {

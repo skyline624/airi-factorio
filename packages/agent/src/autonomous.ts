@@ -1,4 +1,3 @@
-import type { MessageHandler } from './llm/message-handler'
 import type { LLMMessage } from './parser'
 
 import { useLogg } from '@guiiai/logg'
@@ -9,8 +8,8 @@ const logger = useLogg('autonomous').useGlobalConfig()
 const SETTLE_TIMEOUT_MS = 180_000
 
 export interface AutonomousLoopDeps {
-  /** Message handler created WITH the autonomous system prompt. */
-  handler: MessageHandler
+  /** Produce the next decision from a tick-context string (text- or vision-backed). */
+  decide: (tickContent: string) => Promise<LLMMessage | null>
   /** Execute a batch of operation commands in-game (via RCON `/c ...`). */
   execute: (commands: string[]) => Promise<void>
   /** Say a line in the in-game chat (visible to spectators). */
@@ -101,7 +100,7 @@ export function startAutonomousLoop(deps: AutonomousLoopDeps): AutonomousControl
 
       let decision: LLMMessage | null = null
       try {
-        decision = await deps.handler.handleMessage({ type: 'autonomousTick', content: buildTickContent() })
+        decision = await deps.decide(buildTickContent())
       }
       catch (e: unknown) {
         logger.withFields({ tick, error: e instanceof Error ? e.message : String(e) }).error('Decision failed')
