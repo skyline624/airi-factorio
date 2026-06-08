@@ -14,8 +14,7 @@
     "build": "unbuild",
     "dev": "dotenvx run -f .env -f .env.local --overload --debug -- tsx src/main.ts",
     "start": "dotenvx run -f .env -f .env.local --overload -- tsx src/main.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@dotenvx/dotenvx": "^1.51.0",

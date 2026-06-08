@@ -26,6 +26,7 @@
     "lint": "eslint --cache .",
     "lint:fix": "eslint --cache --fix .",
     "typecheck": "pnpm -r --filter=./packages/* run typecheck",
+    "test": "pnpm -r --filter=./packages/* run test",
     "bootstrap": "node scripts/bootstrap.ts"
   },
   "devDependencies": {

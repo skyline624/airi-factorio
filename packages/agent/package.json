@@ -16,7 +16,8 @@
     "dev": "vite-node src/main.ts",
     "start": "dotenvx run -f .env -f .env.local --overload -- tsx src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@dotenvx/dotenvx": "^1.51.0",

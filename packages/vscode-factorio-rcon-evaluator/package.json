@@ -76,8 +76,7 @@
     "build": "tsdown src/index.ts --external vscode",
     "dev": "nr build --watch src",
     "publish": "nr build && vsce publish --no-dependencies",
-    "package": "nr build && vsce package --no-dependencies",
-    "test": "vitest"
+    "package": "nr build && vsce package --no-dependencies"
   },
   "dependencies": {
     "lua-types": "^2.13.1",
