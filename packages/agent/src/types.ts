@@ -27,6 +27,37 @@ export interface AutonomousConfig {
   visionModel: string
 }
 
+export interface LearningConfig {
+  /** When true, the agent runs the Voyager-inspired lifelong-learning loop. */
+  enabled: boolean
+  /** When true, the curriculum proposes objectives automatically; else the fixed `objective` list is used. */
+  curriculumEnabled: boolean
+  /** The end goal the curriculum works toward. */
+  ultimateGoal: string
+  /** Max objectives to run in one session (bounds an autonomous run). */
+  maxObjectives: number
+  /** Fixed objective(s), ' | '-separated. Used when curriculumEnabled is false. */
+  objective: string
+  /** Capable code-generation model for the action agent (empty -> fall back to OPENAI_MODEL). */
+  actionModel: string
+  /** Model used by the critic / curriculum / skill-describer (empty -> fall back to OPENAI_MODEL). */
+  criticModel: string
+  /** Ollama embedding model used to index the skill library (step 4). */
+  embeddingModel: string
+  /** Base URL for the embeddings endpoint (empty -> reuse OPENAI_API_BASEURL). */
+  embeddingBaseUrl: string
+  /** Directory where learned skills are persisted (step 4). */
+  skillsDir: string
+  /** Wall-clock limit for a single skill's sandboxed execution (ms). */
+  sandboxTimeoutMs: number
+  /** Per-operation settle timeout (ms). Keep < sandboxTimeoutMs so a hung op fails first. */
+  settleTimeoutMs: number
+  /** Hard cap on operations a single skill may issue (runaway guard). */
+  maxOpsPerSkill: number
+  /** Max code-gen attempts per objective (Voyager iterative prompting). */
+  maxRetries: number
+}
+
 export interface AiriConfig {
   /** When false, the agent runs standalone (no connection to the AIRI general). */
   enabled: boolean

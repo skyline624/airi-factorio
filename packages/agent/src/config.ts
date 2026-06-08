@@ -1,4 +1,4 @@
-import type { AiriConfig, AutonomousConfig, FactorioRconAPIClientConfig, FactorioWsConfig, OpenAIConfig } from './types.js'
+import type { AiriConfig, AutonomousConfig, FactorioRconAPIClientConfig, FactorioWsConfig, LearningConfig, OpenAIConfig } from './types.js'
 import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 
@@ -35,6 +35,23 @@ export const autonomousConfig: AutonomousConfig = {
   visionModel: 'gemma4:31b-cloud',
 }
 
+export const learningConfig: LearningConfig = {
+  enabled: false,
+  curriculumEnabled: true,
+  ultimateGoal: 'Launch a rocket.',
+  maxObjectives: 6,
+  objective: 'Mine 10 iron ore and 5 coal.',
+  actionModel: '',
+  criticModel: '',
+  embeddingModel: 'qwen3-embedding:8b',
+  embeddingBaseUrl: '',
+  skillsDir: './skills',
+  sandboxTimeoutMs: 120_000,
+  settleTimeoutMs: 60_000,
+  maxOpsPerSkill: 200,
+  maxRetries: 4,
+}
+
 export function initEnv() {
   logger.log('Initializing environment variables')
 
@@ -66,5 +83,22 @@ export function initEnv() {
   autonomousConfig.visionEnabled = (env.AUTONOMOUS_VISION || 'false').trim().toLowerCase() === 'true'
   autonomousConfig.visionModel = (env.AUTONOMOUS_VISION_MODEL || 'gemma4:31b-cloud').trim()
 
-  logger.withFields({ openaiConfig, airiConfig, autonomousConfig }).log('Environment variables initialized')
+  // Voyager-inspired lifelong-learning loop (skill library + curriculum + critic).
+  // Opt-in: without it the agent stays in its reactive / autonomous modes.
+  learningConfig.enabled = (env.LEARNING_MODE || 'false').trim().toLowerCase() === 'true'
+  learningConfig.curriculumEnabled = (env.LEARNING_CURRICULUM || 'true').trim().toLowerCase() === 'true'
+  learningConfig.ultimateGoal = (env.LEARNING_GOAL || 'Launch a rocket.').trim()
+  learningConfig.maxObjectives = Number.parseInt(env.LEARNING_MAX_OBJECTIVES || '6')
+  learningConfig.objective = (env.LEARNING_OBJECTIVE || learningConfig.objective).trim()
+  learningConfig.actionModel = (env.LEARNING_ACTION_MODEL || '').trim()
+  learningConfig.criticModel = (env.LEARNING_CRITIC_MODEL || '').trim()
+  learningConfig.embeddingModel = (env.LEARNING_EMBEDDING_MODEL || 'qwen3-embedding:8b').trim()
+  learningConfig.embeddingBaseUrl = (env.LEARNING_EMBEDDING_BASEURL || '').trim()
+  learningConfig.skillsDir = (env.LEARNING_SKILLS_DIR || './skills').trim()
+  learningConfig.sandboxTimeoutMs = Number.parseInt(env.LEARNING_SANDBOX_TIMEOUT_MS || '120000')
+  learningConfig.settleTimeoutMs = Number.parseInt(env.LEARNING_SETTLE_TIMEOUT_MS || '60000')
+  learningConfig.maxOpsPerSkill = Number.parseInt(env.LEARNING_MAX_OPS || '200')
+  learningConfig.maxRetries = Number.parseInt(env.LEARNING_MAX_RETRIES || '4')
+
+  logger.withFields({ openaiConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
 }

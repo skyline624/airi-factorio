@@ -11,7 +11,8 @@ import { client, v2FactorioConsoleCommandMessagePost, v2FactorioConsoleCommandRa
 import { connect } from 'it-ws'
 import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
-import { airiConfig, autonomousConfig, initEnv, openaiConfig, rconClientConfig, wsClientConfig } from './config'
+import { airiConfig, autonomousConfig, initEnv, learningConfig, openaiConfig, rconClientConfig, wsClientConfig } from './config'
+import { startLearningSession } from './learning/session'
 import { createMessageHandler } from './llm/message-handler'
 import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
@@ -157,6 +158,64 @@ async function main() {
   const ws = connect(`ws://${wsClientConfig.wsHost}:${wsClientConfig.wsPort}`)
 
   const gameLogger = useLogg('game').useGlobalConfig()
+
+  // --- Learning mode (Voyager-inspired): the agent WRITES & runs skill code. ---
+  // Takes precedence over autonomous/reactive modes when enabled.
+  if (learningConfig.enabled) {
+    logger.withFields({ objective: learningConfig.objective }).log('Starting in LEARNING mode (action-as-code)')
+    const raw = async (input: string): Promise<string> => {
+      const response = await v2FactorioConsoleCommandRawPost({ body: { input } })
+      return response.data.output ?? ''
+    }
+    const session = startLearningSession({
+      raw,
+      say: async (message) => { await v2FactorioConsoleCommandMessagePost({ body: { message } }) },
+      curriculumEnabled: learningConfig.curriculumEnabled,
+      ultimateGoal: learningConfig.ultimateGoal,
+      maxObjectives: learningConfig.maxObjectives,
+      // Used only when curriculumEnabled is false; ' | '-separated.
+      objectives: learningConfig.objective.split('|').map(s => s.trim()).filter(Boolean),
+      actionModel: learningConfig.actionModel || openaiConfig.model,
+      criticModel: learningConfig.criticModel || openaiConfig.model,
+      embeddingModel: learningConfig.embeddingModel,
+      embeddingBaseUrl: learningConfig.embeddingBaseUrl || openaiConfig.baseUrl,
+      skillsDir: learningConfig.skillsDir,
+      sandboxTimeoutMs: learningConfig.sandboxTimeoutMs,
+      settleTimeoutMs: learningConfig.settleTimeoutMs,
+      maxOpsPerSkill: learningConfig.maxOpsPerSkill,
+      maxRetries: learningConfig.maxRetries,
+    })
+
+    for await (const buffer of ws.source) {
+      const line = Buffer.from(buffer).toString('utf-8')
+
+      const modErrorMessage = parseModErrorMessage(line)
+      if (modErrorMessage) {
+        gameLogger.withContext('mod').error(modErrorMessage.error)
+        session.onSettled('error', modErrorMessage.error)
+        continue
+      }
+
+      const operationCompletedMessage = parseOperationCompletedMessage(line)
+      if (operationCompletedMessage) {
+        session.onSettled('completed')
+        continue
+      }
+
+      const playerEventMessage = parsePlayerEventMessage(line)
+      if (playerEventMessage) {
+        session.onPerception(`[STATUS] ${playerEventMessage.eventType} ${playerEventMessage.raw}`.trim())
+        continue
+      }
+
+      const chatMessage = parseChatMessage(line)
+      if (chatMessage && !chatMessage.isServer) {
+        session.onChat(chatMessage.username, chatMessage.message)
+        continue
+      }
+    }
+    return
+  }
 
   // --- Autonomous play mode: the agent drives itself; no human task required. ---
   if (autonomousConfig.enabled) {
