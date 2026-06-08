@@ -14,6 +14,17 @@ client.setConfig({
 setGlobalFormat(Format.Pretty)
 const logger = useLogg('tstl-plugin-reload-factorio-mod').useGlobalConfig()
 
+// Each line of generated Lua is sent inside a single-quoted Lua string literal,
+// so backslashes and quotes must be escaped or the reload command breaks (or
+// injects). Trailing CRs from CRLF files are dropped; newlines never appear here
+// (we split on \n and the mod side re-adds one per line).
+function escapeLuaSingleQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, '\\\'')
+    .replace(/\r/g, '')
+}
+
 async function reloadMod(result: tstl.EmitFile[], modName: string) {
   const mod = result.find(file => file.outputPath.endsWith('control.lua'))
   if (!mod) {
@@ -30,7 +41,7 @@ async function reloadMod(result: tstl.EmitFile[], modName: string) {
   for (const line of mod.code.split('\n')) {
     await v2FactorioConsoleCommandRawPost({
       body: {
-        input: `/c remote.call('${modName}_hot_reload', 'append_code_to_reload', '${line}')`,
+        input: `/c remote.call('${modName}_hot_reload', 'append_code_to_reload', '${escapeLuaSingleQuoted(line)}')`,
       },
     })
   }
