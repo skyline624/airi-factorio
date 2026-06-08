@@ -20,6 +20,7 @@ import { create_tools_remote_interface } from './tools'
 import { TaskStates } from './types'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
+import { get_player } from './utils/player'
 
 create_tools_remote_interface()
 
@@ -34,8 +35,11 @@ script.on_configuration_changed(() => {
 })
 
 function log_player_info(player_id: number) {
-  // compact for lua array index
-  const player = game.connected_players[player_id - 1]
+  const player = get_player(player_id)
+  if (!player) {
+    log(`[AUTORIO] No player found for id ${player_id}`)
+    return
+  }
   const log_data: {
     name: string
     position: MapPosition
@@ -198,7 +202,10 @@ remote.add_interface('autorio_operations', {
     return [true, 'Task started']
   },
   craft_item: (item_name: string, count: number = 1): [boolean, string] => {
-    const player = game.connected_players[0]
+    const player = get_player()
+    if (!player) {
+      return [false, 'No player found']
+    }
     if (!player.force.recipes[item_name]) {
       log('[AUTORIO] Cannot start craft_item task: Recipe not available')
       return [false, 'Recipe not available']
@@ -234,7 +241,10 @@ remote.add_interface('autorio_operations', {
     return [true, 'Task started']
   },
   research_technology: (technology_name: string): [boolean, string] => {
-    const player = game.connected_players[0]
+    const player = get_player()
+    if (!player) {
+      return [false, 'No player found']
+    }
     const force = player.force
     const tech = force.technologies[technology_name]
 
@@ -928,7 +938,7 @@ script.on_event(defines.events.on_tick, (unused_event) => {
     setup()
   }
 
-  const player = game.connected_players[0]
+  const player = get_player()
   if (player === undefined || player.character === undefined) {
     if (!no_player_found) {
       log('[AUTORIO] No valid player found')
@@ -968,8 +978,7 @@ script.on_event(defines.events.on_tick, (unused_event) => {
 })
 
 script.on_event(defines.events.on_player_crafted_item, (event: OnPlayerCraftedItemEvent) => {
-  // compact for lua array index
-  log(`[AUTORIO] Player ${game.connected_players[event.player_index - 1].name} crafted item: ${event.item_stack.name}`) // TODO: determine player index
+  log(`[AUTORIO] Player ${get_player(event.player_index)?.name ?? 'unknown'} crafted item: ${event.item_stack.name}`)
 
   if (!storage.player_state.parameters_craft_item) {
     log('[AUTORIO] No parameters found when item crafted')

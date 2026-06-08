@@ -1,4 +1,5 @@
 import { get_inventory_items } from './utils/inventory'
+import { get_player } from './utils/player'
 
 export function create_tools_remote_interface() {
   remote.add_interface('autorio_tools', {
@@ -7,7 +8,11 @@ export function create_tools_remote_interface() {
       return true
     },
     get_recipe: (item_name: string, player_id: number) => {
-      const player = game.connected_players[player_id - 1]
+      const player = get_player(player_id)
+      if (!player) {
+        rcon.print('no player found')
+        return false
+      }
 
       const recipe = player.force.recipes[item_name]
       if (!recipe) {

@@ -1,5 +1,6 @@
 import type { AutorioStorage, PlayerParameters } from './types'
 import { TaskStates } from './types'
+import { get_player } from './utils/player'
 
 // All mutable mod state lives in Factorio's `storage` table so it survives
 // save/load and stays deterministic across multiplayer clients. Call this from
@@ -74,7 +75,7 @@ export function new_task_manager() {
         storage.player_state.parameters_move_items = task
         break
       case TaskStates.CRAFTING:{
-        const player = game.connected_players[0]
+        const player = get_player()
         if (!player) {
           log('[AUTORIO] No player found')
           return
