@@ -3,6 +3,7 @@ export interface FactorioConfig {
   savePath: string
   rconPassword: string
   rconPort: number
+  configPath: string
 }
 
 export interface WsServerConfig {

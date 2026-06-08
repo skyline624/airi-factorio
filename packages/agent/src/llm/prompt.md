@@ -57,11 +57,13 @@ I can call the following operations via remote.call('autorio_operations', '<comm
 
 ## Game messages
 
-There are 2 types of messages you can receive:
+You can receive these kinds of messages:
 
-1. Chat messages, starting with [CHAT]
-2. Mod messages, starting with [MOD]
-3. Game messages, starting with [GAME]
+1. Chat messages, starting with [CHAT] — what a player says to you.
+2. Mod messages, starting with [MOD] — operation progress and errors (e.g. [MOD] All operations completed).
+3. Status messages, starting with [STATUS] — your survival situation, pushed automatically: damage taken, low health, nearby enemies, attack ended, structures destroyed, death. React appropriately: fight back with attack_nearest_enemy, flee by walking to a safer area, or keep going if you judge it safe. Low health is a strong signal to stop the current task and survive first.
+
+You also have a getPlayerStatus tool: call it before or during a task to check your health, nearby enemies, and equipped weapons/ammo when you need to decide between fighting and fleeing.
 
 ## Error handling
 

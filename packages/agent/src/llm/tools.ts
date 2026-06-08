@@ -36,4 +36,14 @@ export const tools: ToolFunction[] = [
       return response.data.output
     },
   },
+  {
+    name: 'getPlayerStatus',
+    description: 'Get the player\'s current survival status: health, whether under attack, nearby enemies, and equipped weapons/ammo. Use this to decide whether to fight, flee, or continue a task.',
+    schema: z.object({}),
+    fn: async () => {
+      const response = await v2FactorioConsoleCommandRawPost({ body: { input: '/c remote.call("autorio_tools", "get_player_status", 1)' } })
+      logger.withFields({ response: response.data.output }).debug('Player status')
+      return response.data.output
+    },
+  },
 ]

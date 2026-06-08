@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseChatMessage, parseCommandMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage } from './parser'
+import { parseChatMessage, parseCommandMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 
 describe('parseCommandMessage', () => {
   it('should parse player command', () => {
@@ -94,5 +94,36 @@ describe('parseLLMMessage', () => {
     const result = parseLLMMessage(noisy)
     expect(result.chatMessage).toBe('ok')
     expect(result.currentStep).toBe(1)
+  })
+})
+
+describe('parsePlayerEventMessage', () => {
+  it('should parse a damaged event with fields', () => {
+    const log = `42.535 Script @__autorio__/control.lua:200: [AUTORIO] [EVENT] damaged health=80 max_health=100 ratio=0.8 cause=small-biter damage_type=physical`
+    const result = parsePlayerEventMessage(log)
+    expect(result?.type).toBe('playerEvent')
+    expect(result?.eventType).toBe('damaged')
+    expect(result?.fields.health).toBe('80')
+    expect(result?.fields.cause).toBe('small-biter')
+  })
+
+  it('should parse an enemies_spotted event', () => {
+    const log = `51.000 Script @__autorio__/control.lua:210: [AUTORIO] [EVENT] enemies_spotted count=3 nearest=small-biter distance=12`
+    const result = parsePlayerEventMessage(log)
+    expect(result?.eventType).toBe('enemies_spotted')
+    expect(result?.fields.count).toBe('3')
+    expect(result?.fields.distance).toBe('12')
+  })
+
+  it('should parse an event without fields', () => {
+    const log = `60.000 Script @__autorio__/control.lua:220: [AUTORIO] [EVENT] enemies_cleared`
+    const result = parsePlayerEventMessage(log)
+    expect(result?.eventType).toBe('enemies_cleared')
+    expect(result?.fields).toEqual({})
+  })
+
+  it('should return null for a non-event log line', () => {
+    const log = `42.535 Script @__autorio__/control.lua:661: [AUTORIO] [ERROR] something happened`
+    expect(parsePlayerEventMessage(log)).toBeNull()
   })
 })

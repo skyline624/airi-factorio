@@ -17,6 +17,18 @@ export function init_storage(): void {
   if (s.setup_complete === undefined) {
     storage.setup_complete = false
   }
+  if (s.perception === undefined) {
+    storage.perception = {
+      last_damage_tick: 0,
+      last_damage_alert_tick: 0,
+      under_attack: false,
+      low_health_alerted: false,
+      last_enemy_count: 0,
+      last_enemy_scan_tick: 0,
+      structures_lost_pending: 0,
+      last_structure_alert_tick: 0,
+    }
+  }
 }
 
 export function new_task_manager() {

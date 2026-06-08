@@ -14,7 +14,7 @@
   "scripts": {
     "build": "unbuild",
     "dev": "vite-node src/main.ts",
-    "start": "dotenvx run -f .env -f .env.local --overload -- tsx src/main.ts",
+    "start": "dotenvx run -f .env -f .env.local --overload -- vite-node src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

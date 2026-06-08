@@ -46,6 +46,13 @@ async function main() {
     factorioConfig.rconPort.toString(),
   ]
 
+  // Optional: use a dedicated data directory (via a config.ini whose write-data
+  // points elsewhere) so the headless server doesn't fight the desktop client
+  // over %APPDATA%/Factorio/.lock when both run on the same machine.
+  if (factorioConfig.configPath) {
+    args.push('--config', factorioConfig.configPath)
+  }
+
   if (arch() === 'arm64') {
     args.unshift(factorioConfig.path)
     factorioInst = execa('/bin/box64', args, {

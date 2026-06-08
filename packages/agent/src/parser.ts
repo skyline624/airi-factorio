@@ -25,7 +25,15 @@ export interface OperationCompletedMessage {
   serverTimestamp: string
 }
 
-export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage
+export interface PlayerEventMessage {
+  type: 'playerEvent'
+  serverTimestamp: string
+  eventType: string
+  fields: Record<string, string>
+  raw: string
+}
+
+export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage | PlayerEventMessage
 
 export interface LLMMessage {
   chatMessage: string
@@ -122,4 +130,28 @@ export function parseOperationCompletedMessage(log: string): OperationCompletedM
   }
 
   return null
+}
+
+export function parsePlayerEventMessage(log: string): PlayerEventMessage | null {
+  // example: 42.535 Script @__autorio__/control.lua:200: [AUTORIO] [EVENT] damaged health=80 max_health=100 ratio=0.8 cause=small-biter damage_type=physical
+  const regex = /(\d+\.\d{3}) Script @__autorio__\/control\.lua:(\d+): \[AUTORIO\] \[EVENT\] (\w+)\s*(.*)/
+  const match = log.match(regex)
+
+  if (!match) {
+    return null
+  }
+
+  const [, serverTimestamp, , eventType, rest] = match
+  const fields: Record<string, string> = {}
+  for (const pair of rest.trim().split(/\s+/)) {
+    if (!pair) {
+      continue
+    }
+    const eq = pair.indexOf('=')
+    if (eq > 0) {
+      fields[pair.slice(0, eq)] = pair.slice(eq + 1)
+    }
+  }
+
+  return { type: 'playerEvent', serverTimestamp, eventType, fields, raw: rest.trim() }
 }

@@ -19,8 +19,11 @@ export async function createMessageHandler() {
 
   const agent = composeAgent({
     provider: {
-      apiKey: openaiConfig.apiKey,
-      baseURL: openaiConfig.baseUrl,
+      // A custom baseURL means a local / OpenAI-compatible server (Ollama, LM
+      // Studio, vLLM…), which usually wants a non-empty (but ignored) key.
+      apiKey: openaiConfig.apiKey || (openaiConfig.baseUrl ? 'sk-no-key' : ''),
+      // Empty -> the default OpenAI endpoint.
+      baseURL: openaiConfig.baseUrl || 'https://api.openai.com/v1',
     },
     tools: toolFunctions,
   })
@@ -48,6 +51,36 @@ export async function createMessageHandler() {
     }
     else if (message.type === 'operationsCompleted') {
       userContent = `[MOD] All operations completed`
+    }
+    else if (message.type === 'playerEvent') {
+      const f = message.fields
+      if (message.eventType === 'damaged') {
+        userContent = `[STATUS] Taking damage. health=${f.health ?? '?'}/${f.max_health ?? '?'} (ratio ${f.ratio ?? '?'}), cause=${f.cause ?? 'unknown'}.`
+      }
+      else if (message.eventType === 'low_health') {
+        userContent = `[STATUS] WARNING: low health (ratio ${f.ratio ?? '?'}). Consider fleeing or fighting back.`
+      }
+      else if (message.eventType === 'health_recovered') {
+        userContent = `[STATUS] Health recovered (ratio ${f.ratio ?? '?'}).`
+      }
+      else if (message.eventType === 'enemies_spotted') {
+        userContent = `[STATUS] ${f.count ?? '?'} enemy/enemies nearby. Nearest: ${f.nearest ?? '?'} at ${f.distance ?? '?'}m.`
+      }
+      else if (message.eventType === 'enemies_cleared') {
+        userContent = `[STATUS] No more enemies nearby.`
+      }
+      else if (message.eventType === 'attack_ended') {
+        userContent = `[STATUS] The attack has ended (no damage taken recently).`
+      }
+      else if (message.eventType === 'structure_lost') {
+        userContent = `[STATUS] ${f.count ?? '?'} of your structure(s) were destroyed.`
+      }
+      else if (message.eventType === 'died') {
+        userContent = `[STATUS] You died (cause=${f.cause ?? 'unknown'}).`
+      }
+      else {
+        userContent = `[STATUS] ${message.eventType} ${message.raw}`
+      }
     }
 
     // Build the request without mutating the persisted history yet, so a failed

@@ -6,7 +6,10 @@ import type {
   LuaEntity,
   LuaInventory,
   LuaPlayer,
+  OnEntityDamagedEvent,
+  OnEntityDiedEvent,
   OnPlayerCraftedItemEvent,
+  OnPlayerDiedEvent,
   OnPlayerMinedEntityEvent,
   OnScriptPathRequestFinishedEvent,
   OnSelectedEntityChangedEvent,
@@ -18,9 +21,18 @@ import type { InventoryItem } from './utils/inventory'
 import { init_storage, new_task_manager } from './task_manager'
 import { create_tools_remote_interface } from './tools'
 import { TaskStates } from './types'
+import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
 import { get_player } from './utils/player'
+
+// Perception tuning (constants, not mutable state — safe outside storage).
+const damage_alert_interval = 120 // ticks (~2s) between two `damaged` events
+const under_attack_timeout = 300 // ticks (~5s) without damage clears under_attack
+const low_health_ratio = 0.3 // health ratio threshold for the low_health alert
+const enemy_scan_interval = 30 // ticks between nearby-enemy scans
+const enemy_scan_radius = 30 // tiles
+const structure_alert_interval = 120 // ticks between aggregated structure_lost events
 
 create_tools_remote_interface()
 
@@ -309,25 +321,6 @@ function get_direction(start_position: MapPositionStruct, end_position: MapPosit
   return defines.direction.southeast
 }
 
-function get_nearest_entity(player: LuaPlayer, entities: LuaEntity[]) {
-  let min_distance = math.huge
-  let nearest_entity: LuaEntity | null = null
-
-  if (entities.length === 0) {
-    return null
-  }
-
-  for (const entity of entities) {
-    const distance = (entity.position.x - player.position.x) ** 2 + (entity.position.y - player.position.y) ** 2
-    if (distance < min_distance) {
-      min_distance = distance
-      nearest_entity = entity
-    }
-  }
-
-  return nearest_entity
-}
-
 function start_mining(player: LuaPlayer, entity_position: MapPositionStruct) {
   player.update_selected_entity(entity_position)
   player.mining_state = { mining: true, position: entity_position } // should not use player.mine_entity() because it will skip the mining animation
@@ -385,6 +378,39 @@ script.on_event(defines.events.on_player_mined_entity, (unused_event: OnPlayerMi
     task_manager.next_task()
   }
 })
+
+script.on_event(defines.events.on_entity_damaged, (event: OnEntityDamagedEvent) => {
+  const player = event.entity.player
+  if (!player || player.index !== 1) {
+    return
+  }
+
+  storage.perception.last_damage_tick = game.tick
+  storage.perception.under_attack = true
+
+  if (game.tick - storage.perception.last_damage_alert_tick >= damage_alert_interval) {
+    storage.perception.last_damage_alert_tick = game.tick
+    const max_health = event.entity.max_health
+    const ratio = max_health > 0 ? math.floor((event.final_health / max_health) * 100) / 100 : 0
+    log(`[AUTORIO] [EVENT] damaged health=${event.final_health} max_health=${max_health} ratio=${ratio} cause=${event.cause?.name ?? 'unknown'} damage_type=${event.damage_type.name}`)
+  }
+}, [{ filter: 'type', type: 'character' }])
+
+script.on_event(defines.events.on_player_died, (event: OnPlayerDiedEvent) => {
+  if (event.player_index !== 1) {
+    return
+  }
+  storage.perception.under_attack = false
+  storage.perception.low_health_alerted = false
+  log(`[AUTORIO] [EVENT] died cause=${event.cause?.name ?? 'unknown'}`)
+})
+
+script.on_event(defines.events.on_entity_died, (event: OnEntityDiedEvent) => {
+  if (event.entity.type === 'character') {
+    return // player death is handled by on_player_died
+  }
+  storage.perception.structures_lost_pending += 1
+}, [{ filter: 'force', force: 'player' }])
 
 function setup() {
   const surface = game.surfaces[1]
@@ -928,6 +954,66 @@ function state_waiting() {
   storage.player_state.parameters_waiting.remaining_ticks -= 1
 }
 
+// Passive perception: runs every tick (even when IDLE) so the agent is alerted
+// to threats while doing nothing. Enemy scan is throttled; health read is cheap.
+function update_perception(player: LuaPlayer) {
+  const character = player.character
+  if (!character) {
+    return
+  }
+  const tick = game.tick
+  const perception = storage.perception
+
+  const max_health = character.max_health
+  const health = character.health ?? max_health
+  const ratio = max_health > 0 ? health / max_health : 1
+  if (ratio <= low_health_ratio && !perception.low_health_alerted) {
+    perception.low_health_alerted = true
+    log(`[AUTORIO] [EVENT] low_health ratio=${math.floor(ratio * 100) / 100}`)
+  }
+  else if (ratio > low_health_ratio && perception.low_health_alerted) {
+    perception.low_health_alerted = false
+    log(`[AUTORIO] [EVENT] health_recovered ratio=${math.floor(ratio * 100) / 100}`)
+  }
+
+  if (perception.under_attack && tick - perception.last_damage_tick > under_attack_timeout) {
+    perception.under_attack = false
+    log(`[AUTORIO] [EVENT] attack_ended`)
+  }
+
+  if (perception.structures_lost_pending > 0 && tick - perception.last_structure_alert_tick >= structure_alert_interval) {
+    log(`[AUTORIO] [EVENT] structure_lost count=${perception.structures_lost_pending}`)
+    perception.structures_lost_pending = 0
+    perception.last_structure_alert_tick = tick
+  }
+
+  if (tick - perception.last_enemy_scan_tick < enemy_scan_interval) {
+    return
+  }
+  perception.last_enemy_scan_tick = tick
+
+  const enemies = player.surface.find_entities_filtered({
+    position: player.position,
+    radius: enemy_scan_radius,
+    force: 'enemy',
+    is_military_target: true,
+  })
+  const count = enemies.length
+  const prev = perception.last_enemy_count
+
+  if (count > 0 && prev === 0) {
+    const nearest = get_nearest_entity(player, enemies)
+    if (nearest) {
+      const d = math.floor(distance(nearest.position, player.position))
+      log(`[AUTORIO] [EVENT] enemies_spotted count=${count} nearest=${nearest.name} distance=${d}`)
+    }
+  }
+  else if (count === 0 && prev > 0) {
+    log(`[AUTORIO] [EVENT] enemies_cleared`)
+  }
+  perception.last_enemy_count = count
+}
+
 let no_player_found = false
 
 script.on_event(defines.events.on_tick, (unused_event) => {
@@ -946,6 +1032,8 @@ script.on_event(defines.events.on_tick, (unused_event) => {
     }
     return
   }
+
+  update_perception(player)
 
   if (storage.player_state.task_state === TaskStates.IDLE) {
     return

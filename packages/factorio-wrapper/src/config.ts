@@ -14,6 +14,7 @@ export const factorioConfig: FactorioConfig = {
   savePath: '',
   rconPassword: '',
   rconPort: 0,
+  configPath: '',
 }
 
 export function initEnv() {
@@ -23,6 +24,7 @@ export function initEnv() {
   factorioConfig.savePath = env.FACTORIO_SAVE_PATH || ''
   factorioConfig.rconPassword = env.FACTORIO_RCON_PASSWORD || ''
   factorioConfig.rconPort = Number.parseInt(env.FACTORIO_RCON_PORT || '27015')
+  factorioConfig.configPath = env.FACTORIO_CONFIG_PATH || ''
 
   wsServerConfig.host = env.WS_SERVER_HOST || 'localhost'
   wsServerConfig.port = Number.parseInt(env.WS_SERVER_PORT || '8080')

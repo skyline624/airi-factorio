@@ -1,5 +1,5 @@
 import type { MessageHandler } from './llm/message-handler'
-import type { StdoutMessage } from './parser'
+import type { PlayerEventMessage, StdoutMessage } from './parser'
 import { Buffer } from 'node:buffer'
 import { Format, setGlobalFormat, useLogg } from '@guiiai/logg'
 import { backOff } from 'exponential-backoff'
@@ -7,10 +7,34 @@ import { client, v2FactorioConsoleCommandMessagePost, v2FactorioConsoleCommandRa
 import { connect } from 'it-ws'
 import { initEnv, rconClientConfig, wsClientConfig } from './config'
 import { createMessageHandler } from './llm/message-handler'
-import { parseChatMessage, parseModErrorMessage, parseOperationCompletedMessage } from './parser'
+import { parseChatMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 
 setGlobalFormat(Format.Pretty)
 const logger = useLogg('main').useGlobalConfig()
+
+// Throttle player events forwarded to the LLM (real-time ms, distinct from the
+// in-game tick throttle on the mod side) to avoid spamming / accumulating calls.
+const lastForwardedAt = new Map<string, number>()
+const eventMinIntervalMs = new Map<string, number>([
+  ['damaged', 5000],
+  ['low_health', 10000],
+  ['enemies_spotted', 8000],
+  ['structure_lost', 8000],
+  ['enemies_cleared', 0],
+  ['health_recovered', 0],
+  ['attack_ended', 0],
+  ['died', 0],
+])
+
+function shouldForwardEvent(message: PlayerEventMessage): boolean {
+  const now = Date.now()
+  const min = eventMinIntervalMs.get(message.eventType) ?? 5000
+  if (now - (lastForwardedAt.get(message.eventType) ?? 0) < min) {
+    return false
+  }
+  lastForwardedAt.set(message.eventType, now)
+  return true
+}
 
 async function executeCommandFromAgent<T extends StdoutMessage>(message: T, messageHandler: MessageHandler) {
   const llmResponse = await backOff(() => messageHandler.handleMessage(message), {
@@ -88,6 +112,16 @@ async function main() {
       gameLogger.withContext('mod').log(`All operations completed`)
 
       await executeCommandFromAgent(operationCompletedMessage, messageHandler)
+      continue
+    }
+
+    const playerEventMessage = parsePlayerEventMessage(line)
+    if (playerEventMessage) {
+      gameLogger.withContext('mod').log(`[EVENT] ${playerEventMessage.eventType} ${playerEventMessage.raw}`)
+
+      if (shouldForwardEvent(playerEventMessage)) {
+        await executeCommandFromAgent(playerEventMessage, messageHandler)
+      }
       continue
     }
   }

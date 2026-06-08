@@ -101,6 +101,19 @@ export interface PlayerState {
   parameters_waiting?: PlayerParametersWaiting
 }
 
+// Perception state: small primitives only (no LuaEntity — those can become
+// invalid between ticks). Used to throttle alerts and detect transitions.
+export interface PerceptionState {
+  last_damage_tick: number
+  last_damage_alert_tick: number
+  under_attack: boolean
+  low_health_alerted: boolean
+  last_enemy_count: number
+  last_enemy_scan_tick: number
+  structures_lost_pending: number
+  last_structure_alert_tick: number
+}
+
 // Shape of Factorio's `storage` table for this mod. Keeping all mutable state
 // here (instead of module-level locals) is what makes it survive save/load and
 // stay deterministic across multiplayer clients.
@@ -108,4 +121,5 @@ export interface AutorioStorage {
   player_state: PlayerState
   task_queue: PlayerParameters[]
   setup_complete: boolean
+  perception: PerceptionState
 }
