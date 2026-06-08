@@ -22,6 +22,7 @@
   "dependencies": {
     "@dotenvx/dotenvx": "^1.51.0",
     "@guiiai/logg": "^1.2.4",
+    "@proj-airi/server-sdk": "0.10.2",
     "@xsai/generate-text": "^0.3.5",
     "@xsai/providers": "^0.1.0-beta.5",
     "execa": "^9.6.0",

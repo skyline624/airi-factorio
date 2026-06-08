@@ -1,11 +1,13 @@
+import type { AiriBridge } from './airi/bridge'
 import type { MessageHandler } from './llm/message-handler'
-import type { PlayerEventMessage, StdoutMessage } from './parser'
+import type { ChatMessage, PlayerEventMessage, StdoutMessage } from './parser'
 import { Buffer } from 'node:buffer'
 import { Format, setGlobalFormat, useLogg } from '@guiiai/logg'
 import { backOff } from 'exponential-backoff'
 import { client, v2FactorioConsoleCommandMessagePost, v2FactorioConsoleCommandRawPost } from 'factorio-rcon-api-client'
 import { connect } from 'it-ws'
-import { initEnv, rconClientConfig, wsClientConfig } from './config'
+import { startAiriBridge } from './airi/bridge'
+import { airiConfig, initEnv, rconClientConfig, wsClientConfig } from './config'
 import { createMessageHandler } from './llm/message-handler'
 import { parseChatMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 
@@ -36,7 +38,7 @@ function shouldForwardEvent(message: PlayerEventMessage): boolean {
   return true
 }
 
-async function executeCommandFromAgent<T extends StdoutMessage>(message: T, messageHandler: MessageHandler) {
+async function executeCommandFromAgent<T extends StdoutMessage>(message: T, messageHandler: MessageHandler, airiBridge?: AiriBridge | null) {
   const llmResponse = await backOff(() => messageHandler.handleMessage(message), {
     timeMultiple: 2,
     maxDelay: 10000,
@@ -57,6 +59,11 @@ async function executeCommandFromAgent<T extends StdoutMessage>(message: T, mess
     },
   })
 
+  // Keep the general in the loop: mirror what the bot says back as passive context.
+  if (llmResponse.chatMessage) {
+    airiBridge?.sendContextUpdate(`[bot] ${llmResponse.chatMessage}`, undefined, 'factorio:agent')
+  }
+
   if (llmResponse.operationCommands.length === 0) {
     return
   }
@@ -69,6 +76,15 @@ async function executeCommandFromAgent<T extends StdoutMessage>(message: T, mess
       input: `/c ${command}`,
     },
   })
+}
+
+// Serialize all agent turns (main loop + AIRI-relayed commands) so concurrent
+// handleMessage calls never interleave the LLM conversation history.
+let agentChain: Promise<unknown> = Promise.resolve()
+function enqueueAgentTask(task: () => Promise<void>): Promise<void> {
+  const run = agentChain.then(task, task)
+  agentChain = run.catch(() => {})
+  return run
 }
 
 async function main() {
@@ -84,6 +100,19 @@ async function main() {
 
   const messageHandler = await createMessageHandler()
 
+  // Optional bridge to the AIRI "general". A spark:command from the general is treated
+  // exactly like a chat message from the master (same decision path).
+  const airiBridge = await startAiriBridge(airiConfig, (text) => {
+    const chatMsg: ChatMessage = {
+      type: 'chat',
+      username: 'AIRI',
+      message: text,
+      isServer: false,
+      date: new Date().toISOString(),
+    }
+    return enqueueAgentTask(() => executeCommandFromAgent(chatMsg, messageHandler, airiBridge))
+  })
+
   for await (const buffer of ws.source) {
     const line = Buffer.from(buffer).toString('utf-8')
 
@@ -95,7 +124,7 @@ async function main() {
 
       gameLogger.withContext('chat').log(`${chatMessage.username}: ${chatMessage.message}`)
 
-      await executeCommandFromAgent(chatMessage, messageHandler)
+      await enqueueAgentTask(() => executeCommandFromAgent(chatMessage, messageHandler, airiBridge))
       continue
     }
 
@@ -103,7 +132,7 @@ async function main() {
     if (modErrorMessage) {
       gameLogger.withContext('mod').error(`${modErrorMessage.error}`)
 
-      await executeCommandFromAgent(modErrorMessage, messageHandler)
+      await enqueueAgentTask(() => executeCommandFromAgent(modErrorMessage, messageHandler, airiBridge))
       continue
     }
 
@@ -111,7 +140,7 @@ async function main() {
     if (operationCompletedMessage) {
       gameLogger.withContext('mod').log(`All operations completed`)
 
-      await executeCommandFromAgent(operationCompletedMessage, messageHandler)
+      await enqueueAgentTask(() => executeCommandFromAgent(operationCompletedMessage, messageHandler, airiBridge))
       continue
     }
 
@@ -120,7 +149,9 @@ async function main() {
       gameLogger.withContext('mod').log(`[EVENT] ${playerEventMessage.eventType} ${playerEventMessage.raw}`)
 
       if (shouldForwardEvent(playerEventMessage)) {
-        await executeCommandFromAgent(playerEventMessage, messageHandler)
+        // Alert the general (same throttle as the local LLM) and let the local agent react.
+        airiBridge?.notifyEvent(playerEventMessage)
+        await enqueueAgentTask(() => executeCommandFromAgent(playerEventMessage, messageHandler, airiBridge))
       }
       continue
     }

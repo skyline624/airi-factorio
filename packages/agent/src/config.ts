@@ -1,4 +1,4 @@
-import type { FactorioRconAPIClientConfig, FactorioWsConfig, OpenAIConfig } from './types.js'
+import type { AiriConfig, FactorioRconAPIClientConfig, FactorioWsConfig, OpenAIConfig } from './types.js'
 import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 
@@ -20,6 +20,13 @@ export const wsClientConfig: FactorioWsConfig = {
   wsPort: 0,
 }
 
+export const airiConfig: AiriConfig = {
+  enabled: false,
+  url: 'ws://localhost:6121/ws',
+  name: 'factorio',
+  token: '',
+}
+
 export function initEnv() {
   logger.log('Initializing environment variables')
 
@@ -37,5 +44,12 @@ export function initEnv() {
   wsClientConfig.wsHost = env.FACTORIO_WS_HOST || 'localhost'
   wsClientConfig.wsPort = Number.parseInt(env.FACTORIO_WS_PORT || '8080')
 
-  logger.withFields({ openaiConfig }).log('Environment variables initialized')
+  // AIRI "general" bridge. Opt-in: the agent stays standalone unless AIRI_ENABLED=true,
+  // so existing local-test workflows (agent + Factorio only) are unaffected.
+  airiConfig.enabled = (env.AIRI_ENABLED || 'false').trim().toLowerCase() === 'true'
+  airiConfig.url = (env.AIRI_WS_URL || 'ws://localhost:6121/ws').trim()
+  airiConfig.name = (env.AIRI_MODULE_NAME || 'factorio').trim()
+  airiConfig.token = (env.AIRI_WS_TOKEN || '').trim()
+
+  logger.withFields({ openaiConfig, airiConfig }).log('Environment variables initialized')
 }
