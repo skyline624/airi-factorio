@@ -34,8 +34,24 @@ export interface LLMMessage {
   currentStep: number
 }
 
+function extractJsonObject(text: string): string {
+  // The model is instructed to return raw JSON, but it sometimes wraps it in
+  // markdown code fences or adds surrounding prose. Be lenient and recover the
+  // JSON object so a stray fence doesn't force a full backoff retry.
+  const fenceMatch = text.match(/```(?:json5?)?([\s\S]*?)```/i)
+  const candidate = fenceMatch ? fenceMatch[1] : text
+
+  const start = candidate.indexOf('{')
+  const end = candidate.lastIndexOf('}')
+  if (start !== -1 && end > start) {
+    return candidate.slice(start, end + 1)
+  }
+
+  return candidate.trim()
+}
+
 export function parseLLMMessage(message: string): LLMMessage {
-  return JSON.parse(message) as LLMMessage
+  return JSON.parse(extractJsonObject(message)) as LLMMessage
 }
 
 export function parseCommandMessage(log: string): CommandMessage | null {

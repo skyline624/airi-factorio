@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseChatMessage, parseCommandMessage, parseModErrorMessage, parseOperationCompletedMessage } from './parser'
+import { parseChatMessage, parseCommandMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage } from './parser'
 
 describe('parseCommandMessage', () => {
   it('should parse player command', () => {
@@ -71,7 +71,28 @@ describe('parseOperationCompletedMessage', () => {
     const result = parseOperationCompletedMessage(log)
     expect(result).toEqual({
       serverTimestamp: '51.889',
-      type: 'operationCompleted',
+      type: 'operationsCompleted',
     })
+  })
+})
+
+describe('parseLLMMessage', () => {
+  it('should parse a raw JSON object', () => {
+    const result = parseLLMMessage(`{"chatMessage":"hi","operationCommands":[],"plan":[],"currentStep":0}`)
+    expect(result.chatMessage).toBe('hi')
+    expect(result.operationCommands).toEqual([])
+  })
+
+  it('should parse JSON wrapped in markdown code fences', () => {
+    const wrapped = '```json\n{"chatMessage":"hi","operationCommands":[],"plan":[],"currentStep":0}\n```'
+    const result = parseLLMMessage(wrapped)
+    expect(result.chatMessage).toBe('hi')
+  })
+
+  it('should recover a JSON object surrounded by prose', () => {
+    const noisy = `Sure! Here you go:\n{"chatMessage":"ok","operationCommands":["a"],"plan":[],"currentStep":1}\nhope that helps`
+    const result = parseLLMMessage(noisy)
+    expect(result.chatMessage).toBe('ok')
+    expect(result.currentStep).toBe(1)
   })
 })

@@ -64,6 +64,7 @@ export interface PlayerParametersAttackNearestEnemy {
   type: TaskStates.ATTACKING
   search_radius: number
   target: LuaEntity | null
+  ticks_elapsed: number
 }
 
 export interface PlayerParametersResearchTechnology {

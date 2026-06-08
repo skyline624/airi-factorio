@@ -7,6 +7,7 @@ const logger = useLogg('config').useGlobalConfig()
 export const openaiConfig: OpenAIConfig = {
   apiKey: '',
   baseUrl: '',
+  model: 'gpt-4o',
 }
 
 export const rconClientConfig: FactorioRconAPIClientConfig = {
@@ -24,6 +25,7 @@ export function initEnv() {
 
   openaiConfig.apiKey = env.OPENAI_API_KEY || ''
   openaiConfig.baseUrl = env.OPENAI_API_BASEURL || ''
+  openaiConfig.model = env.OPENAI_MODEL || 'gpt-4o'
 
   rconClientConfig.host = env.RCON_API_SERVER_HOST || 'localhost'
   rconClientConfig.port = Number.parseInt(env.RCON_API_SERVER_PORT || '24180')

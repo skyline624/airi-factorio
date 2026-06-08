@@ -1,6 +1,7 @@
 export interface OpenAIConfig {
   apiKey: string
   baseUrl: string
+  model: string
 }
 
 export interface FactorioWsConfig {

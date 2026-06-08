@@ -30,18 +30,23 @@ export async function createMessageHandler() {
   async function handleMessage(message: StdoutMessage) {
     logger.withFields({ message }).debug('Handling message')
 
+    let userContent: string | null = null
     if (message.type === 'chat') {
-      messages.push(user(`[CHAT] ${message.message}`))
+      userContent = `[CHAT] ${message.message}`
     }
     else if (message.type === 'modError') {
-      messages.push(user(`[MOD] Error: ${message.error}`))
+      userContent = `[MOD] Error: ${message.error}`
     }
     else if (message.type === 'operationsCompleted') {
-      messages.push(user(`[MOD] All operations completed`))
+      userContent = `[MOD] All operations completed`
     }
 
-    const response = await agent.call(messages, {
-      model: 'gpt-4o',
+    // Build the request without mutating the persisted history yet, so a failed
+    // attempt (and its backoff retry) doesn't duplicate the user message.
+    const requestMessages = userContent ? [...messages, user(userContent)] : messages
+
+    const response = await agent.call(requestMessages, {
+      model: openaiConfig.model,
       maxRoundTrip: 10,
     })
 
@@ -62,6 +67,11 @@ export async function createMessageHandler() {
     }
 
     const parsedMessage = parseLLMMessage(messageFromLLM)
+
+    // Commit to the persisted history only once parsing succeeds.
+    if (userContent) {
+      messages.push(user(userContent))
+    }
     messages.push(assistant(`${JSON.stringify(parsedMessage)}`))
 
     return parsedMessage

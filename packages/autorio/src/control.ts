@@ -221,6 +221,7 @@ remote.add_interface('autorio_operations', {
       type: TaskStates.ATTACKING,
       search_radius,
       target: null,
+      ticks_elapsed: 0,
     })
 
     log(`[AUTORIO] New attack nearest enemy task, search radius: ${search_radius}`)
@@ -360,14 +361,13 @@ script.on_event(defines.events.on_player_mined_entity, (unused_event: OnPlayerMi
     return
   }
 
+  task_manager.player_state.parameters_mine_entity.count = task_manager.player_state.parameters_mine_entity.count - 1
+
   if (task_manager.player_state.parameters_mine_entity.count <= 0) {
-    log('[AUTORIO] Count is 0, switching to IDLE state')
+    log('[AUTORIO] Mining task complete, switching to IDLE state')
     task_manager.reset_task_state()
     task_manager.next_task()
-    return
   }
-
-  task_manager.player_state.parameters_mine_entity.count = task_manager.player_state.parameters_mine_entity.count - 1
 })
 
 function setup() {
@@ -454,13 +454,6 @@ function state_walking_to_entity(player: LuaPlayer) {
     radius: task_manager.player_state.parameters_walk_to_entity.search_radius,
     name: task_manager.player_state.parameters_walk_to_entity.entity_name, // TODO: catch entity name not found error
   })
-
-  if (!entities.length) {
-    log('[AUTORIO] No entities found, reverting to IDLE state')
-    task_manager.reset_task_state()
-    task_manager.next_task()
-    return
-  }
 
   if (entities.length === 0) {
     log(`[AUTORIO] [ERROR] No ${task_manager.player_state.parameters_walk_to_entity.entity_name} found in ${task_manager.player_state.parameters_walk_to_entity.search_radius}m radius, reverting to IDLE state`)
@@ -759,7 +752,6 @@ function state_moving_items(player: LuaPlayer) {
           moved_total += removed
         }
 
-        moved_total += removed
         log(`[AUTORIO] Moved ${removed} ${parameters.item_name} from ${inventory.entity_owner?.name} inventory index ${inventory.index}`)
       })
   }
@@ -859,6 +851,51 @@ function state_walking_direct(player: LuaPlayer) {
   }
 }
 
+function state_attacking(player: LuaPlayer) {
+  const parameters = task_manager.player_state.parameters_attack_nearest_enemy
+  if (!parameters) {
+    log('[AUTORIO] No parameters found when attacking')
+    return
+  }
+
+  // (re)acquire the nearest enemy whenever we don't have a valid target yet
+  if (!parameters.target || !parameters.target.valid) {
+    const enemies = player.surface.find_entities_filtered({
+      position: player.position,
+      radius: parameters.search_radius,
+      force: 'enemy',
+    })
+
+    const nearest_entity = get_nearest_entity(player, enemies)
+    if (!nearest_entity) {
+      log(`[AUTORIO] [ERROR] No enemy found in ${parameters.search_radius}m radius, reverting to IDLE state`)
+      player.shooting_state = { state: defines.shooting.not_shooting, position: player.position }
+      task_manager.reset_task_state()
+      task_manager.next_task()
+      return
+    }
+
+    parameters.target = nearest_entity
+    parameters.ticks_elapsed = 0
+  }
+
+  // give up if the target cannot be defeated in time (e.g. no weapon/ammo) so the queue never stalls
+  if (parameters.ticks_elapsed >= 600) {
+    log('[AUTORIO] [ERROR] Could not defeat the enemy in time, reverting to IDLE state')
+    player.shooting_state = { state: defines.shooting.not_shooting, position: player.position }
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return
+  }
+  parameters.ticks_elapsed += 1
+
+  player.update_selected_entity(parameters.target.position)
+  player.shooting_state = {
+    state: defines.shooting.shooting_selected,
+    position: parameters.target.position,
+  }
+}
+
 function state_waiting() {
   if (!task_manager.player_state.parameters_waiting) {
     log('[AUTORIO] No parameters found when waiting')
@@ -912,6 +949,9 @@ script.on_event(defines.events.on_tick, (unused_event) => {
   }
   else if (task_manager.player_state.task_state === TaskStates.WALKING_DIRECT) {
     state_walking_direct(player)
+  }
+  else if (task_manager.player_state.task_state === TaskStates.ATTACKING) {
+    state_attacking(player)
   }
   else if (task_manager.player_state.task_state === TaskStates.WAITING) {
     state_waiting()
