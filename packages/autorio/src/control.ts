@@ -261,7 +261,7 @@ remote.add_interface('autorio_operations', {
     const tech = force.technologies[technology_name]
 
     if (!tech) {
-      log('[AUTORIO] Cannot start research_technology task: Technology not found')
+      log('[AUTORIO] [ERROR] Cannot start research: technology not found')
       return [false, 'Technology not found']
     }
 
@@ -280,8 +280,8 @@ remote.add_interface('autorio_operations', {
       log(`[AUTORIO] New research_technology task: ${technology_name}`)
       return [true, 'Research started']
     }
-    log('[AUTORIO] Could not start new research.')
-    return [true, 'Cannot start new research.']
+    log('[AUTORIO] [ERROR] Could not start new research')
+    return [false, 'Cannot start new research']
   },
   cancel_all_tasks: () => {
     task_manager.cancel_all_tasks()
@@ -592,7 +592,7 @@ function state_mining(player: LuaPlayer) {
   })
 
   if (entities.length === 0) {
-    log('[AUTORIO] No entity found to mine, switching to IDLE state')
+    log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_mine_entity.entity_name} found within reach to mine`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return
@@ -600,7 +600,7 @@ function state_mining(player: LuaPlayer) {
 
   const nearest_entity = get_nearest_entity(player, entities)
   if (!nearest_entity) {
-    log('[AUTORIO] No entity found to mine, switching to IDLE state')
+    log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_mine_entity.entity_name} found within reach to mine`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return
@@ -626,7 +626,7 @@ function state_placing(player: LuaPlayer) {
   const inventory = player.get_main_inventory()
 
   if (!inventory) {
-    log('[AUTORIO] Cannot access player inventory, ending PLACING task')
+    log('[AUTORIO] [ERROR] Cannot access player inventory to place entity')
     task_manager.reset_task_state()
     task_manager.next_task()
     return [false, 'Cannot access player inventory']
@@ -634,7 +634,7 @@ function state_placing(player: LuaPlayer) {
 
   const entity_prototype = prototypes.entity[storage.player_state.parameters_place_entity.entity_name]
   if (!entity_prototype || !entity_prototype.items_to_place_this) {
-    log('[AUTORIO] Invalid entity name, ending PLACING task')
+    log('[AUTORIO] [ERROR] Invalid entity name, cannot place')
     task_manager.reset_task_state()
     task_manager.next_task()
     return [false, 'Invalid entity name']
@@ -642,7 +642,7 @@ function state_placing(player: LuaPlayer) {
 
   const item_name = entity_prototype.items_to_place_this[0]
   if (!item_name) {
-    log('[AUTORIO] Invalid entity name, ending PLACING task')
+    log('[AUTORIO] [ERROR] Invalid entity name, cannot place')
     task_manager.reset_task_state()
     task_manager.next_task()
     return [false, 'Invalid entity name']
@@ -650,7 +650,7 @@ function state_placing(player: LuaPlayer) {
 
   const [item_stack, unused_count] = inventory.find_item_stack(storage.player_state.parameters_place_entity.entity_name)
   if (!item_stack) {
-    log('[AUTORIO] Entity not found in inventory, ending PLACING task')
+    log(`[AUTORIO] [ERROR] ${storage.player_state.parameters_place_entity.entity_name} not found in inventory to place`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return [false, 'Entity not found in inventory']
@@ -674,10 +674,29 @@ function state_placing(player: LuaPlayer) {
         return [false, 'No resource to place the mining drill on']
       }
     }
+    else if (entity_prototype.type === 'furnace') {
+      // Place a furnace on the nearest mining drill's output tile so it receives ore
+      // hands-free (a furnace sitting on a drill's drop position gets the mined ore).
+      const drills = surface.find_entities_filtered({ position: player.position, radius: 15, type: 'mining-drill' })
+      const nearest_drill = drills.length > 0 ? get_nearest_entity(player, drills) : undefined
+      if (nearest_drill) {
+        storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, nearest_drill.drop_position, 2, 0.5)
+      }
+      if (!storage.player_state.parameters_place_entity.position) {
+        // No drill nearby (or its output is blocked): just place next to the player.
+        storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, player.position, 1, 1)
+      }
+      if (!storage.player_state.parameters_place_entity.position) {
+        log('[AUTORIO] [ERROR] Could not find a valid position to place the furnace')
+        task_manager.reset_task_state()
+        task_manager.next_task()
+        return [false, 'Could not find a valid position to place the entity']
+      }
+    }
     else {
       storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, player.position, 1, 1)
       if (!storage.player_state.parameters_place_entity.position) {
-        log('[AUTORIO] Could not find a valid position to place the entity, ending PLACING task')
+        log('[AUTORIO] [ERROR] Could not find a valid position to place the entity')
         task_manager.reset_task_state()
         task_manager.next_task()
         return [false, 'Could not find a valid position to place the entity']
@@ -702,7 +721,9 @@ function state_placing(player: LuaPlayer) {
     task_manager.next_task()
     return [true, 'Entity placed successfully', entity]
   }
-  log(`[AUTORIO] Failed to place entity: ${storage.player_state.parameters_place_entity.entity_name}`)
+  log(`[AUTORIO] [ERROR] Failed to place entity: ${storage.player_state.parameters_place_entity.entity_name}`)
+  task_manager.reset_task_state()
+  task_manager.next_task()
   return [false, 'Failed to place entity']
 }
 
@@ -724,7 +745,7 @@ function state_moving_items(player: LuaPlayer) {
 
   const player_inventory = player.get_main_inventory()
   if (!player_inventory) {
-    log('[AUTORIO] Cannot access player inventory, ending MOVING_ITEMS task')
+    log('[AUTORIO] [ERROR] Cannot access player inventory to move items')
     task_manager.reset_task_state()
     task_manager.next_task()
     return
@@ -735,7 +756,7 @@ function state_moving_items(player: LuaPlayer) {
   if (parameters.to_entity) {
     const [item_stack, unused_count] = player_inventory.find_item_stack(parameters.item_name)
     if (!item_stack) {
-      log('[AUTORIO] Item not found in player inventory, ending MOVING_ITEMS task')
+      log(`[AUTORIO] [ERROR] ${parameters.item_name} not found in player inventory to move`)
       task_manager.reset_task_state()
       task_manager.next_task()
       return
@@ -822,7 +843,7 @@ function state_moving_items(player: LuaPlayer) {
   }
 
   if (moved_total === 0) {
-    log('[AUTORIO] No items moved, ending task')
+    log(`[AUTORIO] [ERROR] No ${parameters.item_name} moved (target full/empty or out of reach)`)
   }
   else {
     log(`[AUTORIO] Moved a total of ${moved_total} ${parameters.item_name}`)
