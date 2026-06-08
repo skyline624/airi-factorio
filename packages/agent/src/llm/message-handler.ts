@@ -27,6 +27,15 @@ export async function createMessageHandler() {
 
   const messages: Message[] = [system(prompt)]
 
+  // Keep the conversation bounded (token cost + context window). Always keep the
+  // system prompt at index 0 and drop the oldest user/assistant pairs past the cap.
+  const maxHistoryMessages = 40
+  function trimHistory() {
+    while (messages.length > maxHistoryMessages + 1) {
+      messages.splice(1, 2)
+    }
+  }
+
   async function handleMessage(message: StdoutMessage) {
     logger.withFields({ message }).debug('Handling message')
 
@@ -73,6 +82,8 @@ export async function createMessageHandler() {
       messages.push(user(userContent))
     }
     messages.push(assistant(`${JSON.stringify(parsedMessage)}`))
+
+    trimHistory()
 
     return parsedMessage
   }
