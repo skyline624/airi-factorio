@@ -657,12 +657,31 @@ function state_placing(player: LuaPlayer) {
   }
 
   if (!storage.player_state.parameters_place_entity.position) {
-    storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(storage.player_state.parameters_place_entity.entity_name, player.position, 1, 1)
-    if (!storage.player_state.parameters_place_entity.position) {
-      log('[AUTORIO] Could not find a valid position to place the entity, ending PLACING task')
-      task_manager.reset_task_state()
-      task_manager.next_task()
-      return [false, 'Could not find a valid position to place the entity']
+    const place_name = storage.player_state.parameters_place_entity.entity_name
+
+    // Mining drills only produce when placed ON an ore patch. Snap the drill onto the
+    // nearest minable resource instead of dropping it next to the player (which leaves
+    // it off the ore and idle).
+    if (entity_prototype.type === 'mining-drill') {
+      const resources = surface.find_entities_filtered({ position: player.position, radius: 20, type: 'resource' })
+      const nearest_ore = resources.length > 0 ? get_nearest_entity(player, resources) : undefined
+      if (nearest_ore) {
+        storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, nearest_ore.position, 6, 0.5)
+      }
+      if (!storage.player_state.parameters_place_entity.position) {
+        log(`[AUTORIO] [ERROR] No minable resource found near the player to place ${place_name}`)
+        task_manager.cancel_all_tasks()
+        return [false, 'No resource to place the mining drill on']
+      }
+    }
+    else {
+      storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, player.position, 1, 1)
+      if (!storage.player_state.parameters_place_entity.position) {
+        log('[AUTORIO] Could not find a valid position to place the entity, ending PLACING task')
+        task_manager.reset_task_state()
+        task_manager.next_task()
+        return [false, 'Could not find a valid position to place the entity']
+      }
     }
   }
 
