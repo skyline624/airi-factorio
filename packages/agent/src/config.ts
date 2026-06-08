@@ -1,4 +1,4 @@
-import type { AiriConfig, FactorioRconAPIClientConfig, FactorioWsConfig, OpenAIConfig } from './types.js'
+import type { AiriConfig, AutonomousConfig, FactorioRconAPIClientConfig, FactorioWsConfig, OpenAIConfig } from './types.js'
 import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 
@@ -27,6 +27,12 @@ export const airiConfig: AiriConfig = {
   token: '',
 }
 
+export const autonomousConfig: AutonomousConfig = {
+  enabled: false,
+  goal: 'Automate iron plate production: secure a small base, mine iron ore and coal, place burner mining drills on ore patches and stone furnaces next to them, fuel everything with coal, and accumulate at least 50 iron plates.',
+  tickDelayMs: 1500,
+}
+
 export function initEnv() {
   logger.log('Initializing environment variables')
 
@@ -51,5 +57,10 @@ export function initEnv() {
   airiConfig.name = (env.AIRI_MODULE_NAME || 'factorio').trim()
   airiConfig.token = (env.AIRI_WS_TOKEN || '').trim()
 
-  logger.withFields({ openaiConfig, airiConfig }).log('Environment variables initialized')
+  // Autonomous play loop. Opt-in: without it the agent stays purely reactive.
+  autonomousConfig.enabled = (env.AUTONOMOUS_MODE || 'false').trim().toLowerCase() === 'true'
+  autonomousConfig.goal = (env.AUTONOMOUS_GOAL || autonomousConfig.goal).trim()
+  autonomousConfig.tickDelayMs = Number.parseInt(env.AUTONOMOUS_TICK_DELAY_MS || '1500')
+
+  logger.withFields({ openaiConfig, airiConfig, autonomousConfig }).log('Environment variables initialized')
 }

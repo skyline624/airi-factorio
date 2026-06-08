@@ -482,6 +482,10 @@ function state_walking_to_entity(player: LuaPlayer) {
 
     if (follow_path(player, storage.player_state.parameters_walk_to_entity.path)) {
       log('[AUTORIO] Task completed, switching to IDLE state')
+      // Stop the character. Without this, Factorio keeps applying the last walking_state
+      // (walking: true) so the player runs past the target — and the next op (place/mine)
+      // then happens at the wrong spot.
+      player.walking_state = { walking: false, direction: player.walking_state.direction }
       rendering.clear()
       task_manager.reset_task_state()
       task_manager.next_task()
@@ -882,6 +886,7 @@ function state_walking_direct(player: LuaPlayer) {
 
     if (((target.x - player.position.x) ** 2 + (target.y - player.position.y) ** 2) < 2) {
       log('[AUTORIO] Reached target, switching to IDLE state')
+      player.walking_state = { walking: false, direction: player.walking_state.direction }
       task_manager.reset_task_state()
       task_manager.next_task()
     }

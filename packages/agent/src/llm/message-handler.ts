@@ -10,7 +10,7 @@ import { tools } from './tools'
 
 const logger = createLogg('agent').useGlobalConfig()
 
-export async function createMessageHandler() {
+export async function createMessageHandler(systemPromptOverride?: string) {
   const toolFunctions: DefinedTool<any, any>[] = []
 
   for (const tool of tools) {
@@ -28,7 +28,7 @@ export async function createMessageHandler() {
     tools: toolFunctions,
   })
 
-  const messages: Message[] = [system(prompt)]
+  const messages: Message[] = [system(systemPromptOverride ?? prompt)]
 
   // Keep the conversation bounded (token cost + context window). Always keep the
   // system prompt at index 0 and drop the oldest user/assistant pairs past the cap.
@@ -81,6 +81,9 @@ export async function createMessageHandler() {
       else {
         userContent = `[STATUS] ${message.eventType} ${message.raw}`
       }
+    }
+    else if (message.type === 'autonomousTick') {
+      userContent = message.content
     }
 
     // Build the request without mutating the persisted history yet, so a failed

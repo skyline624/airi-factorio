@@ -33,7 +33,13 @@ export interface PlayerEventMessage {
   raw: string
 }
 
-export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage | PlayerEventMessage
+/** Internal (not from stdout): one turn of the autonomous play loop. */
+export interface AutonomousTickMessage {
+  type: 'autonomousTick'
+  content: string
+}
+
+export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage | PlayerEventMessage | AutonomousTickMessage
 
 export interface LLMMessage {
   chatMessage: string

@@ -14,6 +14,15 @@ export interface FactorioRconAPIClientConfig {
   host: string
 }
 
+export interface AutonomousConfig {
+  /** When true, the agent plays Factorio on its own in a perceive→decide→act loop. */
+  enabled: boolean
+  /** The current high-level objective the agent works toward. */
+  goal: string
+  /** Delay (ms) between autonomous turns, to pace the LLM and let the world settle. */
+  tickDelayMs: number
+}
+
 export interface AiriConfig {
   /** When false, the agent runs standalone (no connection to the AIRI general). */
   enabled: boolean
