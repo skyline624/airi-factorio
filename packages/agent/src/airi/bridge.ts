@@ -179,6 +179,11 @@ export async function startAiriBridge(
     token: config.token || undefined,
     possibleEvents: ['spark:command', 'context:update', 'module:announced'],
     autoConnect: false,
+    // A single LLM turn (kimi with thinking) can block the Node event loop for many
+    // seconds, during which the heartbeat ping can't fire and the default 30s read
+    // timeout would tear down the connection — losing any spark:command that lands
+    // mid-turn. Widen the tolerance (same rationale as the AIRI minecraft service).
+    heartbeat: { readTimeout: 120_000, pingInterval: 20_000 },
     onReady: () => logger.log('AIRI bridge READY — connected to the general'),
     onError: (e: unknown) => logger.withFields({ error: e instanceof Error ? e.message : String(e) }).warn('AIRI connection error (will retry)'),
     onClose: () => logger.warn('AIRI connection closed (will retry)'),
