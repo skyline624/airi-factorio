@@ -100,3 +100,12 @@ export interface PlayerState {
   parameters_research_technology?: PlayerParametersResearchTechnology
   parameters_waiting?: PlayerParametersWaiting
 }
+
+// Shape of Factorio's `storage` table for this mod. Keeping all mutable state
+// here (instead of module-level locals) is what makes it survive save/load and
+// stay deterministic across multiplayer clients.
+export interface AutorioStorage {
+  player_state: PlayerState
+  task_queue: PlayerParameters[]
+  setup_complete: boolean
+}

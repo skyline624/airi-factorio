@@ -1,4 +1,5 @@
 import type { EventId } from 'factorio:runtime'
+import type { AutorioStorage } from './types'
 
 export interface ModsGlobals {
   remote_interfaces: string[]
@@ -11,4 +12,5 @@ export interface ModsGlobals {
 
 declare global {
   let mods_globals: Record<string, ModsGlobals> | undefined
+  const storage: AutorioStorage
 }

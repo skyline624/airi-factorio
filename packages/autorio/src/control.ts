@@ -15,7 +15,7 @@ import type {
 } from 'factorio:runtime'
 
 import type { InventoryItem } from './utils/inventory'
-import { new_task_manager } from './task_manager'
+import { init_storage, new_task_manager } from './task_manager'
 import { create_tools_remote_interface } from './tools'
 import { TaskStates } from './types'
 import { get_inventory_items } from './utils/inventory'
@@ -23,9 +23,15 @@ import { distance } from './utils/math'
 
 create_tools_remote_interface()
 
-let setup_complete = false
-
 const task_manager = new_task_manager()
+
+script.on_init(() => {
+  init_storage()
+})
+
+script.on_configuration_changed(() => {
+  init_storage()
+})
 
 function log_player_info(player_id: number) {
   // compact for lua array index
@@ -323,47 +329,47 @@ function start_mining(player: LuaPlayer, entity_position: MapPositionStruct) {
 script.on_event(defines.events.on_selected_entity_changed, (unused_event: OnSelectedEntityChangedEvent) => {})
 
 script.on_event(defines.events.on_script_path_request_finished, (event: OnScriptPathRequestFinishedEvent) => {
-  if (task_manager.player_state.task_state !== TaskStates.WALKING_TO_ENTITY) {
+  if (storage.player_state.task_state !== TaskStates.WALKING_TO_ENTITY) {
     log('[AUTORIO] Not walking to entity, ignoring path request')
     return
   }
 
-  if (!task_manager.player_state.parameters_walk_to_entity) {
+  if (!storage.player_state.parameters_walk_to_entity) {
     log('[AUTORIO] No parameters found when receiving path request')
     return
   }
 
   if (!event.path) {
     log('[AUTORIO] Path calculation failed, switching to direct walking')
-    task_manager.player_state.task_state = TaskStates.WALKING_DIRECT
-    task_manager.player_state.parameters_walking_direct = {
+    storage.player_state.task_state = TaskStates.WALKING_DIRECT
+    storage.player_state.parameters_walking_direct = {
       type: TaskStates.WALKING_DIRECT,
-      target_position: task_manager.player_state.parameters_walk_to_entity.target_position,
+      target_position: storage.player_state.parameters_walk_to_entity.target_position,
     }
-    task_manager.player_state.parameters_walk_to_entity = undefined
+    storage.player_state.parameters_walk_to_entity = undefined
     return
   }
 
-  task_manager.player_state.parameters_walk_to_entity.path = event.path
-  task_manager.player_state.parameters_walk_to_entity.path_drawn = false
-  task_manager.player_state.parameters_walk_to_entity.path_index = 1
-  task_manager.player_state.parameters_walk_to_entity.calculating_path = false
+  storage.player_state.parameters_walk_to_entity.path = event.path
+  storage.player_state.parameters_walk_to_entity.path_drawn = false
+  storage.player_state.parameters_walk_to_entity.path_index = 1
+  storage.player_state.parameters_walk_to_entity.calculating_path = false
   log(`[AUTORIO] Path calculation completed. Path length: ${event.path}`)
 })
 
 script.on_event(defines.events.on_player_mined_entity, (unused_event: OnPlayerMinedEntityEvent) => {
-  if (task_manager.player_state.task_state !== TaskStates.MINING) {
+  if (storage.player_state.task_state !== TaskStates.MINING) {
     return
   }
 
-  if (!task_manager.player_state.parameters_mine_entity) {
+  if (!storage.player_state.parameters_mine_entity) {
     log('[AUTORIO] No parameters found when on_player_mined_entity event')
     return
   }
 
-  task_manager.player_state.parameters_mine_entity.count = task_manager.player_state.parameters_mine_entity.count - 1
+  storage.player_state.parameters_mine_entity.count = storage.player_state.parameters_mine_entity.count - 1
 
-  if (task_manager.player_state.parameters_mine_entity.count <= 0) {
+  if (storage.player_state.parameters_mine_entity.count <= 0) {
     log('[AUTORIO] Mining task complete, switching to IDLE state')
     task_manager.reset_task_state()
     task_manager.next_task()
@@ -378,7 +384,7 @@ function setup() {
     enemy.destroy()
   }
 
-  setup_complete = true
+  storage.setup_complete = true
   log('[AUTORIO] Setup complete')
 }
 
@@ -420,25 +426,25 @@ function follow_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
 }
 
 function state_walking_to_entity(player: LuaPlayer) {
-  if (!task_manager.player_state.parameters_walk_to_entity) {
+  if (!storage.player_state.parameters_walk_to_entity) {
     log('[AUTORIO] No parameters found when walking to entity')
     return
   }
 
-  if (task_manager.player_state.parameters_walk_to_entity.calculating_path) {
+  if (storage.player_state.parameters_walk_to_entity.calculating_path) {
     log('[AUTORIO] Path calculation in progress, skipping')
     return
   }
 
   // follow path
-  if (task_manager.player_state.parameters_walk_to_entity.path) {
-    if (!task_manager.player_state.parameters_walk_to_entity.path_drawn) {
-      draw_path(player, task_manager.player_state.parameters_walk_to_entity.path)
-      task_manager.player_state.parameters_walk_to_entity.path_drawn = true
+  if (storage.player_state.parameters_walk_to_entity.path) {
+    if (!storage.player_state.parameters_walk_to_entity.path_drawn) {
+      draw_path(player, storage.player_state.parameters_walk_to_entity.path)
+      storage.player_state.parameters_walk_to_entity.path_drawn = true
       log('[AUTORIO] Path drawn on ground')
     }
 
-    if (follow_path(player, task_manager.player_state.parameters_walk_to_entity.path)) {
+    if (follow_path(player, storage.player_state.parameters_walk_to_entity.path)) {
       log('[AUTORIO] Task completed, switching to IDLE state')
       rendering.clear()
       task_manager.reset_task_state()
@@ -451,12 +457,12 @@ function state_walking_to_entity(player: LuaPlayer) {
   // find nearest entity and calculate path
   const entities = player.surface.find_entities_filtered({
     position: player.position,
-    radius: task_manager.player_state.parameters_walk_to_entity.search_radius,
-    name: task_manager.player_state.parameters_walk_to_entity.entity_name, // TODO: catch entity name not found error
+    radius: storage.player_state.parameters_walk_to_entity.search_radius,
+    name: storage.player_state.parameters_walk_to_entity.entity_name, // TODO: catch entity name not found error
   })
 
   if (entities.length === 0) {
-    log(`[AUTORIO] [ERROR] No ${task_manager.player_state.parameters_walk_to_entity.entity_name} found in ${task_manager.player_state.parameters_walk_to_entity.search_radius}m radius, reverting to IDLE state`)
+    log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_walk_to_entity.entity_name} found in ${storage.player_state.parameters_walk_to_entity.search_radius}m radius, reverting to IDLE state`)
     task_manager.cancel_all_tasks()
     return
   }
@@ -467,7 +473,7 @@ function state_walking_to_entity(player: LuaPlayer) {
   log(`[AUTORIO] Player position: ${serpent.line(player.position)}`)
   log(`[AUTORIO] Player bounding box: ${serpent.line(player.character?.bounding_box)}`)
 
-  if (nearest_entity && !task_manager.player_state.parameters_walk_to_entity.calculating_path && !task_manager.player_state.parameters_walk_to_entity.path) {
+  if (nearest_entity && !storage.player_state.parameters_walk_to_entity.calculating_path && !storage.player_state.parameters_walk_to_entity.path) {
     const character = player.character
     if (!character) {
       log('[AUTORIO] Player character not found, aborting pathfinding')
@@ -518,14 +524,14 @@ function state_walking_to_entity(player: LuaPlayer) {
         allow_paths_through_own_entities: false,
       },
     })
-    task_manager.player_state.parameters_walk_to_entity.calculating_path = true
-    task_manager.player_state.parameters_walk_to_entity.target_position = nearest_entity.position
+    storage.player_state.parameters_walk_to_entity.calculating_path = true
+    storage.player_state.parameters_walk_to_entity.target_position = nearest_entity.position
     log(`[AUTORIO] Requested path calculation to ${serpent.line(nearest_entity.position)}`)
   }
 }
 
 function state_mining(player: LuaPlayer) {
-  if (!task_manager.player_state.parameters_mine_entity) {
+  if (!storage.player_state.parameters_mine_entity) {
     log('[AUTORIO] No parameters found when mining')
     return
   }
@@ -534,15 +540,15 @@ function state_mining(player: LuaPlayer) {
     return
   }
 
-  if (task_manager.player_state.parameters_mine_entity.position) {
-    start_mining(player, task_manager.player_state.parameters_mine_entity.position)
+  if (storage.player_state.parameters_mine_entity.position) {
+    start_mining(player, storage.player_state.parameters_mine_entity.position)
     return
   }
 
   const entities = player.surface.find_entities_filtered({
     position: player.position,
     radius: 5, // but player can only mine entities within 2 tiles
-    name: task_manager.player_state.parameters_mine_entity.entity_name,
+    name: storage.player_state.parameters_mine_entity.entity_name,
   })
 
   if (entities.length === 0) {
@@ -571,7 +577,7 @@ function state_placing(player: LuaPlayer) {
     return [false, 'Invalid player']
   }
 
-  if (!task_manager.player_state.parameters_place_entity) {
+  if (!storage.player_state.parameters_place_entity) {
     log('[AUTORIO] No parameters found when placing')
     return
   }
@@ -586,7 +592,7 @@ function state_placing(player: LuaPlayer) {
     return [false, 'Cannot access player inventory']
   }
 
-  const entity_prototype = prototypes.entity[task_manager.player_state.parameters_place_entity.entity_name]
+  const entity_prototype = prototypes.entity[storage.player_state.parameters_place_entity.entity_name]
   if (!entity_prototype || !entity_prototype.items_to_place_this) {
     log('[AUTORIO] Invalid entity name, ending PLACING task')
     task_manager.reset_task_state()
@@ -602,7 +608,7 @@ function state_placing(player: LuaPlayer) {
     return [false, 'Invalid entity name']
   }
 
-  const [item_stack, unused_count] = inventory.find_item_stack(task_manager.player_state.parameters_place_entity.entity_name)
+  const [item_stack, unused_count] = inventory.find_item_stack(storage.player_state.parameters_place_entity.entity_name)
   if (!item_stack) {
     log('[AUTORIO] Entity not found in inventory, ending PLACING task')
     task_manager.reset_task_state()
@@ -610,9 +616,9 @@ function state_placing(player: LuaPlayer) {
     return [false, 'Entity not found in inventory']
   }
 
-  if (!task_manager.player_state.parameters_place_entity.position) {
-    task_manager.player_state.parameters_place_entity.position = surface.find_non_colliding_position(task_manager.player_state.parameters_place_entity.entity_name, player.position, 1, 1)
-    if (!task_manager.player_state.parameters_place_entity.position) {
+  if (!storage.player_state.parameters_place_entity.position) {
+    storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(storage.player_state.parameters_place_entity.entity_name, player.position, 1, 1)
+    if (!storage.player_state.parameters_place_entity.position) {
       log('[AUTORIO] Could not find a valid position to place the entity, ending PLACING task')
       task_manager.reset_task_state()
       task_manager.next_task()
@@ -620,10 +626,10 @@ function state_placing(player: LuaPlayer) {
     }
   }
 
-  task_manager.player_state.task_state = TaskStates.IDLE
+  storage.player_state.task_state = TaskStates.IDLE
   const create_entity_args: SurfaceCreateEntity = {
-    name: task_manager.player_state.parameters_place_entity.entity_name,
-    position: task_manager.player_state.parameters_place_entity.position,
+    name: storage.player_state.parameters_place_entity.entity_name,
+    position: storage.player_state.parameters_place_entity.position,
     force: player.force,
     raise_built: true,
     player,
@@ -632,18 +638,18 @@ function state_placing(player: LuaPlayer) {
 
   if (entity) {
     item_stack.count = item_stack.count - 1
-    log(`[AUTORIO] Entity placed successfully: ${task_manager.player_state.parameters_place_entity.entity_name}`)
+    log(`[AUTORIO] Entity placed successfully: ${storage.player_state.parameters_place_entity.entity_name}`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return [true, 'Entity placed successfully', entity]
   }
-  log(`[AUTORIO] Failed to place entity: ${task_manager.player_state.parameters_place_entity.entity_name}`)
+  log(`[AUTORIO] Failed to place entity: ${storage.player_state.parameters_place_entity.entity_name}`)
   return [false, 'Failed to place entity']
 }
 
 // TODO: Move items between specified entity and player inventory, give the entity name and position as parameters
 function state_moving_items(player: LuaPlayer) {
-  const parameters = task_manager.player_state.parameters_move_items
+  const parameters = storage.player_state.parameters_move_items
 
   if (!parameters) {
     log('[AUTORIO] No parameters found when moving items')
@@ -803,33 +809,33 @@ function check_can_craft(player: LuaPlayer, item_name: string, count: number) {
 }
 
 function state_researching(player: LuaPlayer) {
-  if (!task_manager.player_state.parameters_research_technology) {
+  if (!storage.player_state.parameters_research_technology) {
     log('[AUTORIO] No parameters found when researching')
     return
   }
 
   const force = player.force
-  const tech = force.technologies[task_manager.player_state.parameters_research_technology.technology_name]
+  const tech = force.technologies[storage.player_state.parameters_research_technology.technology_name]
 
   if (tech.researched) {
-    log(`[AUTORIO] Research completed: ${task_manager.player_state.parameters_research_technology.technology_name}`)
+    log(`[AUTORIO] Research completed: ${storage.player_state.parameters_research_technology.technology_name}`)
     task_manager.reset_task_state()
     task_manager.next_task()
   }
   else if (force.current_research !== tech) {
-    log(`[AUTORIO] Research interrupted: ${task_manager.player_state.parameters_research_technology.technology_name}`)
+    log(`[AUTORIO] Research interrupted: ${storage.player_state.parameters_research_technology.technology_name}`)
     task_manager.reset_task_state()
     task_manager.next_task()
   }
 }
 
 function state_walking_direct(player: LuaPlayer) {
-  if (!task_manager.player_state.parameters_walking_direct) {
+  if (!storage.player_state.parameters_walking_direct) {
     log('[AUTORIO] No parameters found when walking directly')
     return
   }
 
-  const target = task_manager.player_state.parameters_walking_direct.target_position
+  const target = storage.player_state.parameters_walking_direct.target_position
 
   if (target) {
     const direction = get_direction(player.position, target)
@@ -852,7 +858,7 @@ function state_walking_direct(player: LuaPlayer) {
 }
 
 function state_attacking(player: LuaPlayer) {
-  const parameters = task_manager.player_state.parameters_attack_nearest_enemy
+  const parameters = storage.player_state.parameters_attack_nearest_enemy
   if (!parameters) {
     log('[AUTORIO] No parameters found when attacking')
     return
@@ -897,25 +903,28 @@ function state_attacking(player: LuaPlayer) {
 }
 
 function state_waiting() {
-  if (!task_manager.player_state.parameters_waiting) {
+  if (!storage.player_state.parameters_waiting) {
     log('[AUTORIO] No parameters found when waiting')
     return
   }
 
-  if (task_manager.player_state.parameters_waiting.remaining_ticks <= 0) {
+  if (storage.player_state.parameters_waiting.remaining_ticks <= 0) {
     log('[AUTORIO] Waiting task complete')
     task_manager.reset_task_state()
     task_manager.next_task()
     return
   }
 
-  task_manager.player_state.parameters_waiting.remaining_ticks -= 1
+  storage.player_state.parameters_waiting.remaining_ticks -= 1
 }
 
 let no_player_found = false
 
 script.on_event(defines.events.on_tick, (unused_event) => {
-  if (!setup_complete) {
+  // Defensive: storage may be empty right after a hot-reload; init is idempotent.
+  init_storage()
+
+  if (!storage.setup_complete) {
     setup()
   }
 
@@ -928,32 +937,32 @@ script.on_event(defines.events.on_tick, (unused_event) => {
     return
   }
 
-  if (task_manager.player_state.task_state === TaskStates.IDLE) {
+  if (storage.player_state.task_state === TaskStates.IDLE) {
     return
   }
 
-  if (task_manager.player_state.task_state === TaskStates.WALKING_TO_ENTITY) {
+  if (storage.player_state.task_state === TaskStates.WALKING_TO_ENTITY) {
     state_walking_to_entity(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.MINING) {
+  else if (storage.player_state.task_state === TaskStates.MINING) {
     state_mining(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.PLACING) {
+  else if (storage.player_state.task_state === TaskStates.PLACING) {
     state_placing(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.MOVING_ITEMS) {
+  else if (storage.player_state.task_state === TaskStates.MOVING_ITEMS) {
     state_moving_items(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.RESEARCHING) {
+  else if (storage.player_state.task_state === TaskStates.RESEARCHING) {
     state_researching(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.WALKING_DIRECT) {
+  else if (storage.player_state.task_state === TaskStates.WALKING_DIRECT) {
     state_walking_direct(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.ATTACKING) {
+  else if (storage.player_state.task_state === TaskStates.ATTACKING) {
     state_attacking(player)
   }
-  else if (task_manager.player_state.task_state === TaskStates.WAITING) {
+  else if (storage.player_state.task_state === TaskStates.WAITING) {
     state_waiting()
   }
 })
@@ -962,19 +971,19 @@ script.on_event(defines.events.on_player_crafted_item, (event: OnPlayerCraftedIt
   // compact for lua array index
   log(`[AUTORIO] Player ${game.connected_players[event.player_index - 1].name} crafted item: ${event.item_stack.name}`) // TODO: determine player index
 
-  if (!task_manager.player_state.parameters_craft_item) {
+  if (!storage.player_state.parameters_craft_item) {
     log('[AUTORIO] No parameters found when item crafted')
     return
   }
 
-  if (task_manager.player_state.task_state !== TaskStates.CRAFTING) {
+  if (storage.player_state.task_state !== TaskStates.CRAFTING) {
     return
   }
 
-  task_manager.player_state.parameters_craft_item.crafted = task_manager.player_state.parameters_craft_item.crafted + 1
-  log(`[AUTORIO] Crafted 1 ${task_manager.player_state.parameters_craft_item.item_name}, remaining: ${task_manager.player_state.parameters_craft_item.count - task_manager.player_state.parameters_craft_item.crafted}`)
+  storage.player_state.parameters_craft_item.crafted = storage.player_state.parameters_craft_item.crafted + 1
+  log(`[AUTORIO] Crafted 1 ${storage.player_state.parameters_craft_item.item_name}, remaining: ${storage.player_state.parameters_craft_item.count - storage.player_state.parameters_craft_item.crafted}`)
 
-  if (task_manager.player_state.parameters_craft_item.crafted >= task_manager.player_state.parameters_craft_item.count) {
+  if (storage.player_state.parameters_craft_item.crafted >= storage.player_state.parameters_craft_item.count) {
     log('[AUTORIO] Crafting task complete')
     task_manager.reset_task_state()
     task_manager.next_task()
