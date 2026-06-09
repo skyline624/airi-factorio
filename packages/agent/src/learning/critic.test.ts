@@ -32,4 +32,14 @@ describe('verify', () => {
     const v = await verify({ objective: 'x', before, after, model: 'm', complete })
     expect(v.success).toBe(false)
   })
+
+  it('threads the post-run local map (machine status) into the critic prompt', async () => {
+    let seen = ''
+    const complete = async (o: { user: string | unknown[] }): Promise<string> => {
+      seen = String(o.user)
+      return JSON.stringify({ success: false, critique: 'fuel the furnace' })
+    }
+    await verify({ objective: 'automate iron', before, after, scanSummary: 'stone-furnace @(0,0) facing north [no_fuel]', model: 'm', complete })
+    expect(seen).toContain('no_fuel')
+  })
 })

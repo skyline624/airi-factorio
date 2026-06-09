@@ -91,6 +91,36 @@ describe('createOps', () => {
     await expect(p).resolves.toEqual({ ok: true })
   })
 
+  it('placeAt is a settling op with exact coords + direction in the dispatch', async () => {
+    const bus = createSettleBus(1000)
+    const raw = vi.fn(async () => '[true]')
+    const ops = createOps({ raw, settleBus: bus })
+    const p = ops.placeAt('transport-belt', { x: 5, y: 12, direction: 'south' })
+    bus.settle('completed')
+    await expect(p).resolves.toEqual({ ok: true })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`remote.call('autorio_operations','place_entity_at','transport-belt',5,12,'south')`))
+  })
+
+  it('placeAt propagates an in-game error (blocked tile) and defaults direction to north', async () => {
+    const bus = createSettleBus(1000)
+    const raw = vi.fn(async () => '[true]')
+    const ops = createOps({ raw, settleBus: bus })
+    const p = ops.placeAt('inserter', { x: 1, y: 2 })
+    bus.settle('error', 'Cannot place inserter at (1,2): blocked')
+    await expect(p).resolves.toEqual({ ok: false, error: 'Cannot place inserter at (1,2): blocked' })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_entity_at','inserter',1,2,'north'`))
+  })
+
+  it('scan is NOT settling — parses the JSON local map without arming the bus', async () => {
+    const bus = createSettleBus(1000)
+    const out = `2026 [COMMAND] <server> (command): remote.call('autorio_tools','scan_area',32)\n{"origin":{"x":0,"y":0},"radius":32,"entities":[{"name":"stone-furnace","type":"furnace","x":-5,"y":3,"direction":"north","status":"no_fuel"}],"resources":{"iron-ore":{"count":842,"x":-6,"y":18}}}`
+    const ops = createOps({ raw: async () => out, settleBus: bus })
+    const res = await ops.scan(32)
+    expect(res.entities).toHaveLength(1)
+    expect(res.entities[0]?.status).toBe('no_fuel')
+    expect(res.resources['iron-ore']?.count).toBe(842)
+  })
+
   it('reports a clear error when ops.skill is called before the library is wired', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
@@ -114,6 +144,8 @@ function makeMockOps(): Ops {
     wait: ok,
     attackNearestEnemy: ok,
     skill: ok,
+    placeAt: ok,
+    scan: async () => ({ entities: [], resources: {} }),
   } as Ops
 }
 

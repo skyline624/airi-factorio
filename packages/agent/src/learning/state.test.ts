@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) and snake_case JSON keys */
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { diffState, parseGameState } from './state'
+import { diffState, parseGameState, parseScan } from './state'
 
 describe('parseGameState', () => {
   it('parses a normal snapshot and maps snake_case fields', () => {
@@ -64,5 +64,30 @@ describe('diffState', () => {
     const d = diffState(s, s)
     expect(d).toContain('Inventory gained: (none)')
     expect(d).toContain('Entities built: (none)')
+  })
+})
+
+describe('parseScan', () => {
+  it('parses entities (with direction/status) and aggregated resources', () => {
+    const json = JSON.stringify({
+      origin: { x: 1, y: 2 },
+      radius: 32,
+      entities: [{ name: 'transport-belt', type: 'transport-belt', x: 5, y: 12, direction: 'east', status: 'working' }],
+      resources: { 'iron-ore': { count: 500, x: -3, y: 8 } },
+    })
+    const s = parseScan(json)
+    expect(s.origin).toEqual({ x: 1, y: 2 })
+    expect(s.entities[0]).toEqual({ name: 'transport-belt', type: 'transport-belt', x: 5, y: 12, direction: 'east', status: 'working' })
+    expect(s.resources['iron-ore']).toEqual({ count: 500, x: -3, y: 8 })
+  })
+
+  it('recovers from a raw RCON reply with the command echo + Lua braces', () => {
+    const out = `2026 [COMMAND] <server> (command): remote.call('autorio_tools','scan_area',32)\n{"entities":[{"name":"stone-furnace","type":"furnace","x":0,"y":0,"direction":"north","status":"working"}],"resources":{}}`
+    expect(parseScan(out).entities[0]?.name).toBe('stone-furnace')
+  })
+
+  it('handles empty / junk defensively', () => {
+    expect(parseScan('{}')).toEqual({ origin: undefined, radius: undefined, entities: [], resources: {} })
+    expect(parseScan('not json').entities).toEqual([])
   })
 })

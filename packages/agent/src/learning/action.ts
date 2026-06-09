@@ -1,4 +1,4 @@
-import type { GameState } from './types'
+import type { GameState, ScanResult } from './types'
 import actionPrompt from '../llm/prompt-action-code.md?raw'
 import { complete } from './llm'
 
@@ -18,6 +18,8 @@ export interface GenerateCodeInput {
   lastCritique?: string | null
   /** What has already been achieved toward the objective (banked across retries). */
   progress?: string | null
+  /** A compact spatial map (from ops.scan) so the LLM can place at exact coordinates. */
+  localMap?: string | null
   model: string
   /** Injectable for tests; defaults to the real LLM completion. */
   complete?: typeof complete
@@ -43,6 +45,26 @@ export function summarizeState(state: GameState): string {
     `- health: ${health}`,
     `- researching: ${state.currentResearch ?? 'nothing'} (${state.researchedCount ?? 0} techs done)`,
   ].join('\n')
+}
+
+/** A compact, prompt-friendly local map from ops.scan — for exact-coordinate placement. */
+export function summarizeScan(scan: ScanResult): string {
+  const o = scan.origin
+  const lines: string[] = [`(origin ${o ? `(${Math.round(o.x)}, ${Math.round(o.y)})` : '?'}, radius ${scan.radius ?? '?'})`]
+  if (scan.entities.length) {
+    for (const e of scan.entities.slice(0, 40)) {
+      lines.push(`  - ${e.name} @(${e.x}, ${e.y}) facing ${e.direction} [${e.status}]`)
+    }
+    if (scan.entities.length > 40) {
+      lines.push(`  - … +${scan.entities.length - 40} more entities`)
+    }
+  }
+  else {
+    lines.push('  - (no built entities nearby)')
+  }
+  const res = Object.entries(scan.resources).map(([k, v]) => `${k} x${v.count} near (${v.x}, ${v.y})`)
+  lines.push(`  - resources: ${res.join('; ') || '(none nearby)'}`)
+  return lines.join('\n')
 }
 
 /** Recover the program from the model's Explain/Plan/Code reply. */
@@ -77,6 +99,10 @@ function buildUserMessage(input: GenerateCodeInput): string {
     lines.push(`CONTEXT: ${input.context}`)
   }
   lines.push('', 'CURRENT STATE:', summarizeState(input.state))
+
+  if (input.localMap) {
+    lines.push('', 'LOCAL MAP (nearby entities with coords/direction/status + resource patches — use for ops.placeAt):', input.localMap)
+  }
 
   if (input.progress) {
     lines.push('', `PROGRESS SO FAR (already banked — do ONLY the remainder, don't redo finished work): ${input.progress}`)

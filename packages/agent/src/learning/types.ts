@@ -47,6 +47,27 @@ export interface Skill {
   createdAt: number
 }
 
+/** One entity from a spatial scan (positions/directions/status, for layout reasoning). */
+export interface ScanEntity {
+  name: string
+  type: string
+  x: number
+  y: number
+  /** 'north' | 'east' | 'south' | 'west' | diagonals */
+  direction: string
+  /** 'working' | 'no_power' | 'no_fuel' | 'item_ingredient_shortage' | 'full_output' | 'n/a' | … */
+  status: string
+}
+
+/** Result of `ops.scan(radius)`: a structured local map for spatial reasoning + automation checks. */
+export interface ScanResult {
+  origin?: { x: number, y: number }
+  radius?: number
+  entities: ScanEntity[]
+  /** resource name -> aggregated patch { count, x, y } */
+  resources: Record<string, { count: number, x: number, y: number }>
+}
+
 /**
  * The closed capability surface exposed to skill code inside the sandbox.
  * It maps 1:1 onto the `autorio_operations` primitives plus perception, so the
@@ -56,9 +77,13 @@ export interface Skill {
 export interface Ops {
   /** Read a fresh world snapshot mid-skill. */
   getState: () => Promise<GameState>
+  /** Structured spatial scan: nearby entities (position/direction/status) + resource patches. */
+  scan: (radius?: number) => Promise<ScanResult>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
   placeEntity: (entityName: string) => Promise<OpResult>
+  /** Place ONE entity at EXACT tile coords with orientation (no snapping) — for aligned lines. */
+  placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>

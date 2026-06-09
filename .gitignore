@@ -143,4 +143,4 @@ dist
 .pnpm-store/
 
 # Agent-generated learned skills (Voyager skill library — runtime artifacts)
-packages/agent/skills/
+packages/agent/skills*

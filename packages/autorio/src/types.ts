@@ -6,6 +6,7 @@ export enum TaskStates {
   WALKING_TO_ENTITY = 'walking_to_entity',
   MINING = 'mining',
   PLACING = 'placing',
+  PLACING_AT = 'placing_at',
   PLACING_IN_CHEST = 'placing_in_chest',
   PICKING_UP = 'picking_up',
   CRAFTING = 'crafting',
@@ -45,6 +46,16 @@ export interface PlayerParametersPlaceEntity {
   position?: MapPositionStruct
 }
 
+// Precise, directional placement (no snapping). `direction` is a defines.direction
+// int, mapped from a string at enqueue time so storage stays primitive-only.
+export interface PlayerParametersPlaceEntityAt {
+  type: TaskStates.PLACING_AT
+  entity_name: string
+  x: number
+  y: number
+  direction: number
+}
+
 export interface PlayerParametersMoveItems {
   type: TaskStates.MOVING_ITEMS
   item_name: string
@@ -82,6 +93,7 @@ export type PlayerParameters
     | PlayerParametersWalkingDirect
     | PlayerParametersMineEntity
     | PlayerParametersPlaceEntity
+    | PlayerParametersPlaceEntityAt
     | PlayerParametersMoveItems
     | PlayerParametersCraftItem
     | PlayerParametersAttackNearestEnemy
@@ -94,6 +106,7 @@ export interface PlayerState {
   parameters_walking_direct?: PlayerParametersWalkingDirect
   parameters_mine_entity?: PlayerParametersMineEntity
   parameters_place_entity?: PlayerParametersPlaceEntity
+  parameters_place_entity_at?: PlayerParametersPlaceEntityAt
   parameters_move_items?: PlayerParametersMoveItems
   parameters_craft_item?: PlayerParametersCraftItem
   parameters_attack_nearest_enemy?: PlayerParametersAttackNearestEnemy

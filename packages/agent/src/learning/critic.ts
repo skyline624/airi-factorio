@@ -9,6 +9,8 @@ export interface VerifyOptions {
   before: GameState
   after: GameState
   logs?: string[]
+  /** Post-run local map (entities + their status) for automation/throughput verification. */
+  scanSummary?: string
   model: string
   /** Injectable for tests; defaults to the real LLM completion. */
   complete?: typeof complete
@@ -32,6 +34,9 @@ export async function verify(options: VerifyOptions): Promise<Verdict> {
     '',
     'SKILL LOG (what the agent reported doing):',
     (options.logs && options.logs.length) ? options.logs.join('\n') : '(none)',
+    '',
+    'LOCAL MAP (post-run — nearby entities + their status; for an "automate/build" objective a producer must EXIST and report a healthy status like "working"):',
+    options.scanSummary ?? '(no scan)',
     '',
     'Did the agent achieve the objective? Reply with the JSON verdict only.',
   ].join('\n')

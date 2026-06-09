@@ -1,6 +1,7 @@
 import type { GenerateCodeInput, GeneratedCode, RetrievedSkill } from './action'
 import type { VerifyOptions } from './critic'
-import type { GameState, Ops, Verdict } from './types'
+import type { GameState, Ops, ScanResult, Verdict } from './types'
+import { summarizeScan } from './action'
 import { runSkill } from './runtime'
 import { diffState } from './state'
 
@@ -11,6 +12,8 @@ export interface AttemptDeps {
   captureState: () => Promise<GameState>
   /** Clear the mod's task queue before each attempt, killing any orphaned task from a timed-out attempt. */
   resetTasks?: () => Promise<void>
+  /** Optional spatial scan → a local map shown to the action LLM (before) and the critic (after). */
+  captureScan?: () => Promise<ScanResult>
   generateCode: (input: GenerateCodeInput) => Promise<GeneratedCode>
   verify: (options: VerifyOptions) => Promise<Verdict>
   actionModel: string
@@ -61,6 +64,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     // completion can't resolve this attempt's first op.
     await deps.resetTasks?.()
 
+    const localMap = deps.captureScan ? summarizeScan(await deps.captureScan()) : null
+
     const gen = await deps.generateCode({
       objective,
       context,
@@ -70,6 +75,7 @@ export async function attemptObjective(objective: string, context: string, deps:
       lastError,
       lastCritique,
       progress: attempt === 1 ? null : diffState(before, current),
+      localMap,
       model: deps.actionModel,
     })
     code = gen.code
@@ -86,7 +92,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     logs = result.logs
 
     const after = await deps.captureState()
-    const verdict = await deps.verify({ objective, before, after, logs, model: deps.criticModel })
+    const scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
+    const verdict = await deps.verify({ objective, before, after, logs, scanSummary, model: deps.criticModel })
     lastVerdict = verdict
 
     if (verdict.success) {

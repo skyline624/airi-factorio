@@ -21,6 +21,8 @@ function mockOps(): Ops {
     wait: ok,
     attackNearestEnemy: ok,
     skill: ok,
+    placeAt: ok,
+    scan: async () => ({ entities: [], resources: {} }),
   } as Ops
 }
 

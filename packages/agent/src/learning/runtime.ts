@@ -1,8 +1,8 @@
 import type { SettleBus } from './settle-bus'
-import type { GameState, OpResult, Ops, SettleResult } from './types'
+import type { GameState, OpResult, Ops, ScanResult, SettleResult } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
-import { CAPTURE_STATE_COMMAND, parseGameState } from './state'
+import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -33,7 +33,7 @@ export function luaArg(value: unknown): string {
 // Operations that enqueue a task and therefore emit a settle signal when done.
 // `research_technology` does NOT enqueue a task (it would never settle), and
 // `craft_item` only settles when it returns success (it can reject synchronously).
-const SETTLING_OPS = new Set(['walk_to_entity', 'mine_entity', 'place_entity', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
+const SETTLING_OPS = new Set(['walk_to_entity', 'mine_entity', 'place_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
 
 export interface OpsDeps {
   /** Send a full `/c ...` console command and resolve with the rcon output. */
@@ -133,9 +133,15 @@ export function createOps(deps: OpsDeps): Ops {
       bumpOpCount()
       return parseGameState(await deps.raw(CAPTURE_STATE_COMMAND))
     },
+    scan: async (radius = 32): Promise<ScanResult> => {
+      bumpOpCount()
+      const r = Math.max(1, Math.floor(radius))
+      return parseScan(await deps.raw(`/c remote.call('autorio_tools','scan_area',${r})`))
+    },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
     placeEntity: entityName => runOp('place_entity', [entityName]),
+    placeAt: (entityName, at) => runOp('place_entity_at', [entityName, at.x, at.y, at.direction ?? 'north']),
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),

@@ -47,6 +47,7 @@ export function new_task_manager() {
     storage.player_state.parameters_walking_direct = undefined
     storage.player_state.parameters_mine_entity = undefined
     storage.player_state.parameters_place_entity = undefined
+    storage.player_state.parameters_place_entity_at = undefined
     storage.player_state.parameters_move_items = undefined
     storage.player_state.parameters_craft_item = undefined
     storage.player_state.parameters_attack_nearest_enemy = undefined
@@ -82,6 +83,9 @@ export function new_task_manager() {
         break
       case TaskStates.PLACING:
         storage.player_state.parameters_place_entity = task
+        break
+      case TaskStates.PLACING_AT:
+        storage.player_state.parameters_place_entity_at = task
         break
       case TaskStates.MOVING_ITEMS:
         storage.player_state.parameters_move_items = task

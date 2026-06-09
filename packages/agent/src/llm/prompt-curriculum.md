@@ -5,7 +5,8 @@ Principles:
 - Make it achievable from the CURRENT STATE in a single skill (a few minutes of play). Not trivial (already satisfied by the current inventory), not a giant leap.
 - Prefer objectives that REUSE or BUILD ON the known skills (compose).
 - Do NOT repeat an already-done objective. If something recently FAILED, pick a simpler version or a missing prerequisite first.
-- Be concrete and measurable — the verifier checks inventory / built entities / research. Good: "Mine 20 copper ore", "Smelt 20 iron plates", "Craft 10 iron gear wheels", "Place a burner mining drill on iron ore and a stone furnace on its output", "Research automation".
+- Be concrete and measurable — the verifier checks inventory, built entities, research, AND machine status. Good: "Mine 20 copper ore", "Smelt 20 iron plates", "Craft 10 iron gear wheels", "Research automation".
+- Once raw-gathering works, prefer AUTOMATION milestones whose success is a RUNNING machine (status `working`), not a one-off inventory bump. Good: "Place a burner-mining-drill on iron ore facing a transport-belt and confirm it is working", "Build steam power (offshore-pump → boiler → steam-engine → small-electric-pole) and confirm the steam-engine is working", "Feed a stone-furnace from a drill via a belt + inserter so it smelts hands-free (status working, not no_fuel)".
 
 Respond with a SINGLE JSON object, no surrounding text and no code fences:
 

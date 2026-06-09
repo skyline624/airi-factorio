@@ -1,4 +1,4 @@
-import type { GameState } from './types'
+import type { GameState, ScanResult } from './types'
 import { useLogg } from '@guiiai/logg'
 import { generateCode } from './action'
 import { attemptObjective } from './attempt'
@@ -7,7 +7,7 @@ import { proposeNextObjective } from './curriculum'
 import { createOps, extractEntryName, runSkill } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
-import { captureState as captureStateFn } from './state'
+import { captureState as captureStateFn, parseScan } from './state'
 
 const logger = useLogg('learning').useGlobalConfig()
 
@@ -54,6 +54,7 @@ export interface LearningController {
 export function startLearningSession(deps: LearningSessionDeps): LearningController {
   const settleBus = createSettleBus(deps.settleTimeoutMs)
   const captureState = (): Promise<GameState> => captureStateFn(deps.raw)
+  const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 32)'))
 
   const library = createSkillLibrary({
     dir: deps.skillsDir,
@@ -97,6 +98,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     const result = await attemptObjective(objective, context, {
       makeOps,
       captureState,
+      captureScan,
       resetTasks,
       generateCode,
       verify,

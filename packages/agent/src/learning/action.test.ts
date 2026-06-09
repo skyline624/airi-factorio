@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) as keys */
-import type { GameState } from './types'
+import type { GameState, ScanResult } from './types'
 import { describe, expect, it } from 'vitest'
-import { extractCodeBlock, generateCode, summarizeState } from './action'
+import { extractCodeBlock, generateCode, summarizeScan, summarizeState } from './action'
 
 describe('extractCodeBlock', () => {
   it('extracts a fenced js block', () => {
@@ -25,6 +25,20 @@ describe('summarizeState', () => {
     expect(out).toContain('iron-ore:10')
     expect(out).toContain('stone-furnace:1')
     expect(out).toContain('(3, -5)')
+  })
+})
+
+describe('summarizeScan', () => {
+  it('renders a compact local map with direction/status and resources', () => {
+    const scan: ScanResult = {
+      origin: { x: 0, y: 0 },
+      radius: 32,
+      entities: [{ name: 'stone-furnace', type: 'furnace', x: -5, y: 3, direction: 'north', status: 'no_fuel' }],
+      resources: { coal: { count: 100, x: 3, y: 9 } },
+    }
+    const out = summarizeScan(scan)
+    expect(out).toContain('stone-furnace @(-5, 3) facing north [no_fuel]')
+    expect(out).toContain('coal x100 near (3, 9)')
   })
 })
 

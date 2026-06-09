@@ -185,6 +185,18 @@ remote.add_interface('autorio_operations', {
     log(`[AUTORIO] New place_entity task: ${entity_name}`)
     return true
   },
+  place_entity_at: (entity_name: string, x: number, y: number, direction: string) => {
+    task_manager.add_task({
+      type: TaskStates.PLACING_AT,
+      entity_name,
+      x,
+      y,
+      direction: direction_from_name(direction),
+    })
+
+    log(`[AUTORIO] New place_entity_at task: ${entity_name} at (${x},${y}) dir=${direction}`)
+    return true
+  },
   move_items: (item_name: string, entity_name: string, max_count: number, to_entity: boolean): [boolean, string] => {
     task_manager.add_task({
       type: TaskStates.MOVING_ITEMS,
@@ -292,6 +304,29 @@ remote.add_interface('autorio_operations', {
     return true
   },
 })
+
+// Map a human-friendly direction string (from the LLM) to a defines.direction.
+// Unknown/undefined falls back to north. (Factorio 2.0 is 16-way: N=0,E=4,S=8,W=12.)
+function direction_from_name(name: string) {
+  switch (name) {
+    case 'east':
+      return defines.direction.east
+    case 'south':
+      return defines.direction.south
+    case 'west':
+      return defines.direction.west
+    case 'northeast':
+      return defines.direction.northeast
+    case 'southeast':
+      return defines.direction.southeast
+    case 'southwest':
+      return defines.direction.southwest
+    case 'northwest':
+      return defines.direction.northwest
+    default:
+      return defines.direction.north
+  }
+}
 
 function get_direction(start_position: MapPositionStruct, end_position: MapPositionStruct) {
   const angle = math.atan2(end_position.y - start_position.y, start_position.x - end_position.x)
@@ -727,6 +762,87 @@ function state_placing(player: LuaPlayer) {
   return [false, 'Failed to place entity']
 }
 
+// Precise, directional placement at exact coordinates — NO snapping. Validates with
+// can_place_entity (manual build check) and emits [ERROR] if blocked. This is what
+// lets the agent lay aligned lines (belts, inserters, assemblers, power).
+function state_placing_at(player: LuaPlayer) {
+  const params = storage.player_state.parameters_place_entity_at
+  if (!params) {
+    log('[AUTORIO] No parameters found when placing at')
+    return
+  }
+
+  const surface = player.surface
+  const inventory = player.get_main_inventory()
+  if (!inventory) {
+    log('[AUTORIO] [ERROR] Cannot access player inventory to place entity')
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Cannot access player inventory']
+  }
+
+  const entity_prototype = prototypes.entity[params.entity_name]
+  if (!entity_prototype || !entity_prototype.items_to_place_this) {
+    log('[AUTORIO] [ERROR] Invalid entity name, cannot place')
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Invalid entity name']
+  }
+
+  const item_name = entity_prototype.items_to_place_this[0]
+  if (!item_name) {
+    log('[AUTORIO] [ERROR] Invalid entity name, cannot place')
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Invalid entity name']
+  }
+
+  const [item_stack] = inventory.find_item_stack(params.entity_name)
+  if (!item_stack) {
+    log(`[AUTORIO] [ERROR] ${params.entity_name} not found in inventory to place`)
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Entity not found in inventory']
+  }
+
+  const position = { x: params.x, y: params.y }
+  const can_place = surface.can_place_entity({
+    name: params.entity_name,
+    position,
+    direction: params.direction as defines.direction,
+    force: player.force,
+    build_check_type: defines.build_check_type.manual,
+  })
+  if (!can_place) {
+    log(`[AUTORIO] [ERROR] Cannot place ${params.entity_name} at (${params.x},${params.y}): blocked or invalid position`)
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Cannot place here']
+  }
+
+  storage.player_state.task_state = TaskStates.IDLE
+  const entity = surface.create_entity({
+    name: params.entity_name,
+    position,
+    direction: params.direction as defines.direction,
+    force: player.force,
+    raise_built: true,
+    player,
+  })
+
+  if (entity) {
+    item_stack.count = item_stack.count - 1
+    log(`[AUTORIO] Entity placed at exact position: ${params.entity_name} (${params.x},${params.y})`)
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [true, 'Entity placed successfully', entity]
+  }
+  log(`[AUTORIO] [ERROR] Failed to place entity at (${params.x},${params.y}): ${params.entity_name}`)
+  task_manager.reset_task_state()
+  task_manager.next_task()
+  return [false, 'Failed to place entity']
+}
+
 // TODO: Move items between specified entity and player inventory, give the entity name and position as parameters
 function state_moving_items(player: LuaPlayer) {
   const parameters = storage.player_state.parameters_move_items
@@ -1092,6 +1208,9 @@ script.on_event(defines.events.on_tick, (unused_event) => {
   }
   else if (storage.player_state.task_state === TaskStates.PLACING) {
     state_placing(player)
+  }
+  else if (storage.player_state.task_state === TaskStates.PLACING_AT) {
+    state_placing_at(player)
   }
   else if (storage.player_state.task_state === TaskStates.MOVING_ITEMS) {
     state_moving_items(player)

@@ -1,4 +1,4 @@
-import type { GameState } from './types'
+import type { GameState, ScanEntity, ScanResult } from './types'
 import { extractLastJsonLine } from './json'
 
 // A self-contained Lua snippet that gathers a compact world snapshot and prints
@@ -92,4 +92,49 @@ export function diffState(before: GameState, after: GameState): string {
   }
 
   return lines.join('\n')
+}
+
+/** Parse the JSON reply from the `scan_area` tool into a structured local map. */
+export function parseScan(output: string): ScanResult {
+  const raw = extractLastJsonLine<Record<string, unknown>>(output) ?? {}
+
+  const entities: ScanEntity[] = []
+  if (Array.isArray(raw.entities)) {
+    for (const item of raw.entities as unknown[]) {
+      if (item && typeof item === 'object') {
+        const e = item as Record<string, unknown>
+        entities.push({
+          name: typeof e.name === 'string' ? e.name : 'unknown',
+          type: typeof e.type === 'string' ? e.type : 'unknown',
+          x: Number(e.x) || 0,
+          y: Number(e.y) || 0,
+          direction: typeof e.direction === 'string' ? e.direction : 'north',
+          status: typeof e.status === 'string' ? e.status : 'n/a',
+        })
+      }
+    }
+  }
+
+  const resources: Record<string, { count: number, x: number, y: number }> = {}
+  if (raw.resources && typeof raw.resources === 'object' && !Array.isArray(raw.resources)) {
+    for (const [key, value] of Object.entries(raw.resources as Record<string, unknown>)) {
+      if (value && typeof value === 'object') {
+        const o = value as Record<string, unknown>
+        resources[key] = { count: Number(o.count) || 0, x: Number(o.x) || 0, y: Number(o.y) || 0 }
+      }
+    }
+  }
+
+  let origin: { x: number, y: number } | undefined
+  if (raw.origin && typeof raw.origin === 'object' && !Array.isArray(raw.origin)) {
+    const o = raw.origin as { x?: unknown, y?: unknown }
+    origin = { x: Number(o.x) || 0, y: Number(o.y) || 0 }
+  }
+
+  return {
+    origin,
+    radius: typeof raw.radius === 'number' ? raw.radius : undefined,
+    entities,
+    resources,
+  }
 }
