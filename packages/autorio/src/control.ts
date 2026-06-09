@@ -473,6 +473,18 @@ function draw_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
   }
 }
 
+// Path-following robustness: how close (tiles) counts as "reached" a waypoint, the per-tick
+// movement below which we count as no-progress, how many consecutive no-progress ticks means
+// the hop to the next waypoint is blocked, how many fresh-path recomputes we try before giving
+// up, after how many failed pure-pathfinding recomputes we start clearing the way, and the
+// radius (tiles) within which we then destroy blocking trees/rocks.
+const WAYPOINT_REACHED = 0.35
+const STUCK_PROGRESS_EPS = 0.03
+const STUCK_TICKS = 45
+const MAX_PATH_RECOMPUTES = 6
+const DESTROY_AFTER_RECOMPUTES = 2
+const OBSTACLE_CLEAR_RADIUS = 2.5
+
 function follow_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
   if (path.length === 0) {
     return true
@@ -481,7 +493,7 @@ function follow_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
   // check if reached next waypoint
   const next_position = path[0].position
   const d = distance(next_position, player.position)
-  if (d < 0.1) {
+  if (d < WAYPOINT_REACHED) {
     path.shift()
     return false
   }
@@ -496,6 +508,43 @@ function follow_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
   return false
 }
 
+// "Destroy when needed" escape hatch: clear organic obstacles (trees, rocks) within reach
+// when the character is wedged and pathfinding alone can't get out. Never touches the
+// player's own buildings or ore resources. Returns how many entities were cleared.
+function clear_obstacles_near(player: LuaPlayer): number {
+  const obstacles = player.surface.find_entities_filtered({
+    position: player.position,
+    radius: OBSTACLE_CLEAR_RADIUS,
+    type: ['tree', 'simple-entity'],
+  })
+  let n = 0
+  for (const o of obstacles) {
+    if (o.valid) {
+      o.destroy()
+      n = n + 1
+    }
+  }
+  return n
+}
+
+// If the character ends up inside a freshly-placed entity's collision box, push it onto the
+// nearest free tile — so the agent never boxes itself in (which would strand every later walk).
+function push_character_clear(player: LuaPlayer, entity: LuaEntity) {
+  const character = player.character
+  if (!character || !entity.valid) {
+    return
+  }
+  const bb = entity.bounding_box
+  const cp = character.position
+  if (cp.x >= bb.left_top.x && cp.x <= bb.right_bottom.x && cp.y >= bb.left_top.y && cp.y <= bb.right_bottom.y) {
+    const free = player.surface.find_non_colliding_position('character', cp, 6, 0.25)
+    if (free) {
+      character.teleport(free)
+      log(`[AUTORIO] Pushed character clear of freshly-placed ${entity.name}`)
+    }
+  }
+}
+
 function state_walking_to_entity(player: LuaPlayer) {
   if (!storage.player_state.parameters_walk_to_entity) {
     log('[AUTORIO] No parameters found when walking to entity')
@@ -507,26 +556,62 @@ function state_walking_to_entity(player: LuaPlayer) {
     return
   }
 
+  const params = storage.player_state.parameters_walk_to_entity
+
   // follow path
-  if (storage.player_state.parameters_walk_to_entity.path) {
-    if (!storage.player_state.parameters_walk_to_entity.path_drawn) {
-      draw_path(player, storage.player_state.parameters_walk_to_entity.path)
-      storage.player_state.parameters_walk_to_entity.path_drawn = true
+  if (params.path) {
+    if (!params.path_drawn) {
+      draw_path(player, params.path)
+      params.path_drawn = true
       log('[AUTORIO] Path drawn on ground')
     }
 
-    if (follow_path(player, storage.player_state.parameters_walk_to_entity.path)) {
-      log('[AUTORIO] Task completed, switching to IDLE state')
-      // Stop the character. Without this, Factorio keeps applying the last walking_state
-      // (walking: true) so the player runs past the target — and the next op (place/mine)
-      // then happens at the wrong spot.
+    // Stuck detection: if the character stops advancing, the straight-line hop to the next
+    // waypoint is blocked (typically a tree the route grazes). Recompute a fresh path from
+    // the current spot — the pathfinder routes around objects — bounded by MAX_PATH_RECOMPUTES
+    // so we fail cleanly instead of shoving against the obstacle until the op times out.
+    const moved = params.last_position ? distance(player.position, params.last_position) : 999
+    params.last_position = { x: player.position.x, y: player.position.y }
+    params.stuck_ticks = moved < STUCK_PROGRESS_EPS ? (params.stuck_ticks ?? 0) + 1 : 0
+
+    if (params.stuck_ticks >= STUCK_TICKS) {
+      params.recompute_count = (params.recompute_count ?? 0) + 1
       player.walking_state = { walking: false, direction: player.walking_state.direction }
       rendering.clear()
-      task_manager.reset_task_state()
-      task_manager.next_task()
+      if (params.recompute_count > MAX_PATH_RECOMPUTES) {
+        log(`[AUTORIO] [ERROR] Stuck walking to ${params.entity_name}: no navigable path after ${MAX_PATH_RECOMPUTES} recomputes, aborting`)
+        task_manager.cancel_all_tasks()
+        return
+      }
+      // Pathfinding first; once a couple of pure recomputes haven't helped, clear the
+      // organic obstacles (trees/rocks) physically blocking the way, then recompute.
+      if (params.recompute_count >= DESTROY_AFTER_RECOMPUTES) {
+        const cleared = clear_obstacles_near(player)
+        if (cleared > 0) {
+          log(`[AUTORIO] Cleared ${cleared} blocking tree(s)/rock(s) to free the route`)
+        }
+      }
+      log(`[AUTORIO] Stuck following path, recomputing fresh route (attempt ${params.recompute_count}/${MAX_PATH_RECOMPUTES})`)
+      params.path = null
+      params.path_drawn = false
+      params.last_position = undefined
+      params.stuck_ticks = 0
+      // fall through to the path-calculation branch below to request a new route
     }
+    else {
+      if (follow_path(player, params.path)) {
+        log('[AUTORIO] Task completed, switching to IDLE state')
+        // Stop the character. Without this, Factorio keeps applying the last walking_state
+        // (walking: true) so the player runs past the target — and the next op (place/mine)
+        // then happens at the wrong spot.
+        player.walking_state = { walking: false, direction: player.walking_state.direction }
+        rendering.clear()
+        task_manager.reset_task_state()
+        task_manager.next_task()
+      }
 
-    return
+      return
+    }
   }
 
   // find nearest entity and calculate path
@@ -751,6 +836,7 @@ function state_placing(player: LuaPlayer) {
 
   if (entity) {
     item_stack.count = item_stack.count - 1
+    push_character_clear(player, entity)
     log(`[AUTORIO] Entity placed successfully: ${storage.player_state.parameters_place_entity.entity_name}`)
     task_manager.reset_task_state()
     task_manager.next_task()
@@ -832,6 +918,7 @@ function state_placing_at(player: LuaPlayer) {
 
   if (entity) {
     item_stack.count = item_stack.count - 1
+    push_character_clear(player, entity)
     log(`[AUTORIO] Entity placed at exact position: ${params.entity_name} (${params.x},${params.y})`)
     task_manager.reset_task_state()
     task_manager.next_task()

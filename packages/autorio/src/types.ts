@@ -26,6 +26,12 @@ export interface PlayerParametersWalkToEntity {
   path_index: number
   calculating_path: boolean
   target_position: MapPositionStruct | null
+  // Stuck detection while following a path: the character's position last tick, how many
+  // consecutive no-progress ticks we've seen, and how many times we've recomputed a fresh
+  // path. Lets us route around obstacles (or fail cleanly) instead of shoving forever.
+  last_position?: MapPositionStruct
+  stuck_ticks?: number
+  recompute_count?: number
 }
 
 export interface PlayerParametersWalkingDirect {
