@@ -1,4 +1,5 @@
-import type { AiriConfig, AutonomousConfig, FactorioRconAPIClientConfig, FactorioWsConfig, LearningConfig, OpenAIConfig } from './types.js'
+import type { RconConfig } from './rcon.js'
+import type { AiriConfig, AutonomousConfig, FactorioWsConfig, LearningConfig, OpenAIConfig } from './types.js'
 import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 
@@ -10,9 +11,10 @@ export const openaiConfig: OpenAIConfig = {
   model: 'gpt-4o',
 }
 
-export const rconClientConfig: FactorioRconAPIClientConfig = {
+export const rconClientConfig: RconConfig = {
   host: '',
   port: 0,
+  password: '',
 }
 
 export const wsClientConfig: FactorioWsConfig = {
@@ -63,8 +65,13 @@ export function initEnv() {
     logger.warn('No OPENAI_API_KEY and no OPENAI_API_BASEURL set: requests to the default OpenAI endpoint will fail. Set a key, or point OPENAI_API_BASEURL at a local OpenAI-compatible server (Ollama, LM Studio, vLLM…).')
   }
 
-  rconClientConfig.host = env.RCON_API_SERVER_HOST || 'localhost'
-  rconClientConfig.port = Number.parseInt(env.RCON_API_SERVER_PORT || '24180')
+  // Native Source-RCON connection straight to the Factorio server (no Docker / REST proxy).
+  rconClientConfig.host = (env.RCON_HOST || env.RCON_API_SERVER_HOST || 'localhost').trim()
+  rconClientConfig.port = Number.parseInt(env.RCON_PORT || '27015')
+  rconClientConfig.password = (env.RCON_PASSWORD || '').trim()
+  if (!rconClientConfig.password) {
+    logger.warn('No RCON_PASSWORD set: the agent cannot authenticate to the Factorio RCON port. Set RCON_PASSWORD to match the server\'s --rcon-password.')
+  }
 
   wsClientConfig.wsHost = env.FACTORIO_WS_HOST || 'localhost'
   wsClientConfig.wsPort = Number.parseInt(env.FACTORIO_WS_PORT || '8080')

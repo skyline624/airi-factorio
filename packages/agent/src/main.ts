@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { env } from 'node:process'
 import { Format, setGlobalFormat, useLogg } from '@guiiai/logg'
 import { backOff } from 'exponential-backoff'
-import { client, v2FactorioConsoleCommandMessagePost, v2FactorioConsoleCommandRawPost } from 'factorio-rcon-api-client'
 import { connect } from 'it-ws'
 import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
@@ -17,6 +16,7 @@ import { createMessageHandler } from './llm/message-handler'
 import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
 import { parseChatMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
+import { initRcon, rconCommand, rconSay } from './rcon'
 
 setGlobalFormat(Format.Pretty)
 const logger = useLogg('main').useGlobalConfig()
@@ -60,11 +60,7 @@ async function executeCommandFromAgent<T extends StdoutMessage>(message: T, mess
     return
   }
 
-  await v2FactorioConsoleCommandMessagePost({
-    body: {
-      message: llmResponse.chatMessage,
-    },
-  })
+  await rconSay(llmResponse.chatMessage)
 
   // Keep the general in the loop: mirror what the bot says back as passive context.
   if (llmResponse.chatMessage) {
@@ -78,11 +74,7 @@ async function executeCommandFromAgent<T extends StdoutMessage>(message: T, mess
   logger.withFields({ operationCommands: llmResponse.operationCommands, currentStep: llmResponse.currentStep }).debug('Executing operation commands')
 
   const command = llmResponse.operationCommands.join(';')
-  await v2FactorioConsoleCommandRawPost({
-    body: {
-      input: `/c ${command}`,
-    },
-  })
+  await rconCommand(`/c ${command}`)
 }
 
 // Serialize all agent turns (main loop + AIRI-relayed commands) so concurrent
@@ -100,7 +92,7 @@ function enqueueAgentTask(task: () => Promise<void>): Promise<void> {
 async function visionDecide(tickContent: string): Promise<LLMMessage | null> {
   const shot = 'airi-auto-view.png'
   try {
-    await v2FactorioConsoleCommandRawPost({ body: { input: `/c local p=game.get_player(1); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end` } })
+    await rconCommand(`/c local p=game.get_player(1); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end`)
   }
   catch { /* ignore screenshot dispatch errors */ }
   await new Promise(resolve => setTimeout(resolve, 1500))
@@ -151,9 +143,7 @@ async function visionDecide(tickContent: string): Promise<LLMMessage | null> {
 async function main() {
   initEnv()
 
-  client.setConfig({
-    baseUrl: `http://${rconClientConfig.host}:${rconClientConfig.port}`,
-  })
+  initRcon(rconClientConfig)
 
   const ws = connect(`ws://${wsClientConfig.wsHost}:${wsClientConfig.wsPort}`)
 
@@ -163,13 +153,10 @@ async function main() {
   // Takes precedence over autonomous/reactive modes when enabled.
   if (learningConfig.enabled) {
     logger.withFields({ objective: learningConfig.objective }).log('Starting in LEARNING mode (action-as-code)')
-    const raw = async (input: string): Promise<string> => {
-      const response = await v2FactorioConsoleCommandRawPost({ body: { input } })
-      return response.data.output ?? ''
-    }
+    const raw = async (input: string): Promise<string> => rconCommand(input)
     const session = startLearningSession({
       raw,
-      say: async (message) => { await v2FactorioConsoleCommandMessagePost({ body: { message } }) },
+      say: async (message) => { await rconSay(message) },
       curriculumEnabled: learningConfig.curriculumEnabled,
       ultimateGoal: learningConfig.ultimateGoal,
       maxObjectives: learningConfig.maxObjectives,
@@ -234,10 +221,10 @@ async function main() {
       goal: autonomousConfig.goal,
       tickDelayMs: autonomousConfig.tickDelayMs,
       execute: async (commands) => {
-        await v2FactorioConsoleCommandRawPost({ body: { input: `/c ${commands.join(';')}` } })
+        await rconCommand(`/c ${commands.join(';')}`)
       },
       say: async (message) => {
-        await v2FactorioConsoleCommandMessagePost({ body: { message } })
+        await rconSay(message)
       },
     })
 

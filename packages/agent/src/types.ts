@@ -9,11 +9,6 @@ export interface FactorioWsConfig {
   wsHost: string
 }
 
-export interface FactorioRconAPIClientConfig {
-  port: number
-  host: string
-}
-
 export interface AutonomousConfig {
   /** When true, the agent plays Factorio on its own in a perceive→decide→act loop. */
   enabled: boolean

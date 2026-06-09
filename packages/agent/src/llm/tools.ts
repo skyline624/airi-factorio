@@ -1,6 +1,6 @@
 import { createLogg } from '@guiiai/logg'
-import { v2FactorioConsoleCommandRawPost } from 'factorio-rcon-api-client'
 import { z } from 'zod'
+import { rconCommand } from '../rcon.js'
 
 const logger = createLogg('tools').useGlobalConfig()
 
@@ -17,9 +17,9 @@ export const tools: ToolFunction[] = [
     description: 'Get the items in the player\'s inventory',
     schema: z.object({}),
     fn: async () => {
-      const response = await v2FactorioConsoleCommandRawPost({ body: { input: '/c remote.call("autorio_tools", "get_inventory_items", 1)' } })
-      logger.withFields({ response: response.data.output }).debug('Inventory items')
-      return response.data.output
+      const output = await rconCommand('/c remote.call("autorio_tools", "get_inventory_items", 1)')
+      logger.withFields({ response: output }).debug('Inventory items')
+      return output
     },
   },
   {
@@ -31,9 +31,9 @@ export const tools: ToolFunction[] = [
     fn: async ({ parameters }) => {
       logger.withFields(parameters).debug('Try to get recipe for item')
 
-      const response = await v2FactorioConsoleCommandRawPost({ body: { input: `/c remote.call("autorio_tools", "get_recipe", "${parameters.item}", 1)` } })
-      logger.withFields({ response: response.data.output }).debug('Recipe')
-      return response.data.output
+      const output = await rconCommand(`/c remote.call("autorio_tools", "get_recipe", "${parameters.item}", 1)`)
+      logger.withFields({ response: output }).debug('Recipe')
+      return output
     },
   },
   {
@@ -41,9 +41,9 @@ export const tools: ToolFunction[] = [
     description: 'Get the player\'s current survival status: health, whether under attack, nearby enemies, and equipped weapons/ammo. Use this to decide whether to fight, flee, or continue a task.',
     schema: z.object({}),
     fn: async () => {
-      const response = await v2FactorioConsoleCommandRawPost({ body: { input: '/c remote.call("autorio_tools", "get_player_status", 1)' } })
-      logger.withFields({ response: response.data.output }).debug('Player status')
-      return response.data.output
+      const output = await rconCommand('/c remote.call("autorio_tools", "get_player_status", 1)')
+      logger.withFields({ response: output }).debug('Player status')
+      return output
     },
   },
 ]

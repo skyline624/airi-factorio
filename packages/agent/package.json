@@ -27,7 +27,6 @@
     "@xsai/providers": "^0.1.0-beta.5",
     "execa": "^9.6.0",
     "exponential-backoff": "^3.1.3",
-    "factorio-rcon-api-client": "^2.0.4",
     "it-ws": "^6.1.5",
     "neuri": "^0.2.1",
     "zod": "^4.1.12",
