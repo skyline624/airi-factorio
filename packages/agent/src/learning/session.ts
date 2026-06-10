@@ -59,7 +59,10 @@ export interface LearningController {
 export function startLearningSession(deps: LearningSessionDeps): LearningController {
   const settleBus = createSettleBus(deps.settleTimeoutMs)
   const captureState = (): Promise<GameState> => captureStateFn(deps.raw, deps.playerName ?? '')
-  const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 32)'))
+  // The critic's post-run evidence: a surface-wide census of the force's producing
+  // machines + status (NOT a player-centred scan, which misses the build whenever
+  // the agent wandered off — e.g. to mine coal — before the run ended).
+  const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_factory\')'))
 
   const library = createSkillLibrary({
     dir: deps.skillsDir,

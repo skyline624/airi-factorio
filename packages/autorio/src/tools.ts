@@ -202,6 +202,38 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ tick: game.tick, origin: player.position, radius: r, entities, resources }))
       return true
     },
+    // Surface-wide census of the player-force's PRODUCING machines + their status,
+    // in the same shape as scan_area. The critic uses this to judge "is the factory
+    // running?" regardless of where the player wandered — a player-centred scan_area
+    // misses the build whenever the agent walked off (e.g. to mine coal) before the
+    // run ended, which read as a false "machines missing / misplaced".
+    scan_factory: () => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print('{}')
+        return false
+      }
+      const surface = player.surface
+      const producer_types = ['mining-drill', 'furnace', 'assembling-machine', 'lab', 'boiler', 'generator', 'pumpjack', 'chemical-plant', 'oil-refinery', 'rocket-silo']
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string }[] = []
+      let n = 0
+      for (const e of surface.find_entities_filtered({ force: player.force, type: producer_types })) {
+        if (n >= 100) {
+          break
+        }
+        n += 1
+        entities.push({
+          name: e.name,
+          type: e.type,
+          x: math.floor(e.position.x * 10) / 10,
+          y: math.floor(e.position.y * 10) / 10,
+          direction: name_from_direction(e.direction),
+          status: status_name(e.status),
+        })
+      }
+      rcon.print(helpers.table_to_json({ tick: game.tick, origin: player.position, radius: -1, entities, resources: {} }))
+      return true
+    },
     // Authoritative lookup for the learning agent so it stops GUESSING recipes /
     // machine mechanics. Returns JSON { name, recipe?, entity? } with camelCase
     // keys matching the agent's RecipeInfo/EntityInfo types. A missing key means
