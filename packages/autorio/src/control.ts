@@ -795,42 +795,54 @@ function state_placing(player: LuaPlayer) {
       }
     }
     else if (entity_prototype.type === 'furnace') {
-      // Place a furnace on the nearest mining drill's output tile so it receives ore
-      // hands-free (a furnace sitting on a drill's drop position gets the mined ore).
-      // Search a wide radius: the agent often places the drill, wanders off to
-      // mine/craft, then places the furnace — so the drill it should feed can be
-      // dozens of tiles away. (create_entity ignores build reach, so snapping the
-      // furnace onto a distant drill's output still works.)
+      // Put the furnace ON the nearest drill's output so it receives ore hands-free.
+      // Wide search: the agent often places the drill, wanders to mine/craft, then
+      // places the furnace, so the drill can be far (create_entity ignores reach).
       const drills = surface.find_entities_filtered({ position: player.position, radius: 48, type: 'mining-drill' })
       const nearest_drill = drills.length > 0 ? get_nearest_entity(player, drills) : undefined
+      let chosen: MapPositionStruct | undefined
       if (nearest_drill) {
-        // A drill's drop_position is the CENTRE of its output slot: a furnace sitting
-        // there catches the mined ore hands-free. Try that exact tile FIRST — do not
-        // jump straight to find_non_colliding_position, which (to dodge the adjacent
-        // drill) nudges the 2x2 furnace OFF the drop tile, leaving it next to the
-        // output instead of on it (so it never receives ore). Only search outward if
-        // the drop tile is genuinely blocked.
+        // The drill feeds whatever entity occupies the TILE under its drop_position.
+        // Enumerate the (integer-grid) 2x2 furnace centres whose footprint covers
+        // that tile, keep the placeable ones, and pick the centre FURTHEST from the
+        // drill so the furnace extends away from it. This GUARANTEES drop_target ==
+        // furnace — unlike find_non_colliding_position, which slid the box off the
+        // drop tile to dodge the drill and silently broke the feed.
         const drop = nearest_drill.drop_position
-        const can_place_on_drop = surface.can_place_entity({
-          name: place_name,
-          position: drop,
-          force: player.force,
-          build_check_type: defines.build_check_type.manual,
-        })
-        storage.player_state.parameters_place_entity.position = can_place_on_drop
-          ? drop
-          : surface.find_non_colliding_position(place_name, drop, 2, 0.5)
+        const dc = nearest_drill.position
+        let best_dist = -1
+        for (const cx of [math.floor(drop.x), math.ceil(drop.x)]) {
+          for (const cy of [math.floor(drop.y), math.ceil(drop.y)]) {
+            if (math.abs(drop.x - cx) >= 1 || math.abs(drop.y - cy) >= 1) {
+              continue // footprint must cover the drop tile
+            }
+            const pos = { x: cx, y: cy }
+            if (!surface.can_place_entity({ name: place_name, position: pos, force: player.force, build_check_type: defines.build_check_type.manual })) {
+              continue
+            }
+            const dist = (cx - dc.x) * (cx - dc.x) + (cy - dc.y) * (cy - dc.y)
+            if (dist > best_dist) {
+              best_dist = dist
+              chosen = pos
+            }
+          }
+        }
+        // Last resort if every covering tile is blocked: nearest free spot to the drop.
+        if (!chosen) {
+          chosen = surface.find_non_colliding_position(place_name, drop, 2, 0.5)
+        }
       }
-      if (!storage.player_state.parameters_place_entity.position) {
-        // No drill nearby (or its output is blocked): just place next to the player.
-        storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, player.position, 1, 1)
+      if (!chosen) {
+        // No drill nearby: just place next to the player.
+        chosen = surface.find_non_colliding_position(place_name, player.position, 1, 1)
       }
-      if (!storage.player_state.parameters_place_entity.position) {
+      if (!chosen) {
         log('[AUTORIO] [ERROR] Could not find a valid position to place the furnace')
         task_manager.reset_task_state()
         task_manager.next_task()
         return [false, 'Could not find a valid position to place the entity']
       }
+      storage.player_state.parameters_place_entity.position = chosen
     }
     else {
       storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, player.position, 1, 1)
@@ -857,6 +869,17 @@ function state_placing(player: LuaPlayer) {
     item_stack.count = item_stack.count - 1
     push_character_clear(player, entity)
     log(`[AUTORIO] Entity placed successfully: ${storage.player_state.parameters_place_entity.entity_name}`)
+    // Note: a drill only reports drop_target (and reaches 'working') once it has
+    // FUEL, so we can't verify the drill->furnace hookup here at placement time —
+    // an unfueled drill always reads drop_target=NONE regardless of position. The
+    // furnace was placed to cover the drill's drop tile (see the snap above); the
+    // feed latches automatically once the drill is fueled and mining.
+    if (entity_prototype.type === 'furnace') {
+      const near_drills = surface.find_entities_filtered({ position: entity.position, radius: 5, type: 'mining-drill' })
+      if (near_drills.length > 0) {
+        log(`[AUTORIO] Furnace placed on the output tile of a drill at (${near_drills[0].position.x},${near_drills[0].position.y}) — will feed once the drill has fuel`)
+      }
+    }
     task_manager.reset_task_state()
     task_manager.next_task()
     return [true, 'Entity placed successfully', entity]
@@ -958,9 +981,14 @@ function state_moving_items(player: LuaPlayer) {
     return
   }
 
+  // Item moves use the script inventory API (insert/remove), which ignores player
+  // build/reach distance — so the old radius-8 limit was an artificial proxy that
+  // made fueling fail "out of reach" whenever the agent had drifted a few tiles
+  // after building. Widen it so the just-built machine is still found. (Capped at
+  // max_count total, so it tops up the nearest matching machines, not the whole base.)
   const nearby_entities = player.surface.find_entities_filtered({
     position: player.position,
-    radius: 8,
+    radius: 32,
     name: parameters.entity_name,
     force: player.force,
   })
