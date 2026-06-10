@@ -64,7 +64,9 @@ export function new_task_manager() {
     const task = storage.task_queue.shift()
     if (!task) {
       storage.player_state.task_state = TaskStates.IDLE
-      game.print('[AUTORIO] All operations completed')
+      // `log()` (not `game.print`) so the agent gets the signal via stdout
+      // WITHOUT broadcasting it to every player's in-game chat. The agent's
+      // parser keys off this `Script @__autorio__/control.lua:…` log line.
       log('[AUTORIO] All operations completed')
       return
     }

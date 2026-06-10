@@ -39,6 +39,16 @@ function buildPacket(id: number, type: number, body: string): Buffer {
   return p
 }
 
+// Factorio echoes every `/c <cmd>` (cheat command) to ALL connected players'
+// chat as "<server> (command): ...". The agent runs commands constantly (state
+// capture, scans, describe, ops) and only needs their rcon.print/game.print
+// output, never that echo — so we run them as `/silent-command`, which executes
+// the exact same Lua without the chat spam. Done at the single send choke point
+// so callers/builders keep using the readable `/c ` prefix (and their tests).
+function silenceConsole(input: string): string {
+  return input.startsWith('/c ') ? `/silent-command ${input.slice(3)}` : input
+}
+
 /**
  * Minimal Factorio (Source) RCON client over raw TCP — replaces the external
  * factorio-rcon-api (Docker) REST wrapper, so the agent talks to the server's
@@ -149,7 +159,7 @@ export function createRconClient(config: RconConfig): RconClient {
               },
               timer: warmTimer,
             })
-            s.write(buildPacket(warmId, TYPE_EXEC, '/c rcon.print("")'))
+            s.write(buildPacket(warmId, TYPE_EXEC, silenceConsole('/c rcon.print("")')))
           },
           reject,
           timer,
@@ -181,7 +191,7 @@ export function createRconClient(config: RconConfig): RconClient {
           reject(new Error('RCON command timed out'))
         }, COMMAND_TIMEOUT_MS)
         waiters.set(id, { resolve, reject, timer })
-        s.write(buildPacket(id, TYPE_EXEC, input))
+        s.write(buildPacket(id, TYPE_EXEC, silenceConsole(input)))
       })
     },
     close() {
