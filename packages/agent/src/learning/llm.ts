@@ -1,3 +1,4 @@
+import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 import { openaiConfig } from '../config'
 
@@ -17,11 +18,21 @@ export interface CompleteOptions {
  * Mirrors the raw-fetch approach already proven for vision in main.ts. Returns
  * the assistant text, or null on any failure.
  */
+// A real generation is well under this (the relay sustains ~130-170 tok/s); the cap
+// exists so an occasional relay STALL fails fast and the attempt retries, instead of
+// the raw fetch hanging for minutes with no timeout (the cause of the "nothing
+// happens for ages" stalls). Override with LEARNING_LLM_TIMEOUT_MS if needed.
+const LLM_TIMEOUT_MS = Number.parseInt(env.LEARNING_LLM_TIMEOUT_MS || '90000')
+
 export async function complete(options: CompleteOptions): Promise<string | null> {
   const baseURL = openaiConfig.baseUrl || 'https://api.openai.com/v1'
+  const startedAt = Date.now()
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS)
   try {
     const response = await fetch(`${baseURL}/chat/completions`, {
       method: 'POST',
+      signal: ctrl.signal,
       // eslint-disable-next-line ts/naming-convention -- standard HTTP header names
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${openaiConfig.apiKey || 'sk-no-key'}` },
       body: JSON.stringify({
@@ -38,15 +49,25 @@ export async function complete(options: CompleteOptions): Promise<string | null>
     if (!response.ok) {
       logger.withFields({ status: response.status, model: options.model || openaiConfig.model }).warn('LLM endpoint returned a non-OK status')
     }
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>, usage?: { prompt_tokens?: number, completion_tokens?: number } }
     const content = data.choices?.[0]?.message?.content ?? null
+    // Per-call latency + token accounting, so a slow call shows whether it's input
+    // size, output size, or the call itself hanging.
+    const secs = (Date.now() - startedAt) / 1000
+    const inTok = data.usage?.prompt_tokens ?? -1
+    const outTok = data.usage?.completion_tokens ?? Math.round((content?.length ?? 0) / 4)
+    logger.withFields({ model: options.model || openaiConfig.model, inTok, outTok, secs: Number(secs.toFixed(1)), tps: secs > 0 && outTok > 0 ? Number((outTok / secs).toFixed(1)) : 0 }).log('LLM call')
     if (!content) {
       logger.withFields({ model: options.model || openaiConfig.model }).warn('LLM returned no content (check the model name and endpoint)')
     }
     return content
   }
   catch (e) {
-    logger.withFields({ error: e instanceof Error ? e.message : String(e) }).warn('LLM request failed (is the endpoint reachable?)')
+    const aborted = e instanceof Error && e.name === 'AbortError'
+    logger.withFields({ error: aborted ? `timed out after ${LLM_TIMEOUT_MS}ms` : (e instanceof Error ? e.message : String(e)) }).warn('LLM request failed (is the endpoint reachable?)')
     return null
+  }
+  finally {
+    clearTimeout(timer)
   }
 }
