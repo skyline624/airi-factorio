@@ -1,5 +1,5 @@
 import type { RconConfig } from './rcon.js'
-import type { AiriConfig, AutonomousConfig, FactorioWsConfig, LearningConfig, OpenAIConfig } from './types.js'
+import type { AiriConfig, AutonomousConfig, DebugConfig, FactorioConfig, FactorioWsConfig, LearningConfig, OpenAIConfig } from './types.js'
 import { env } from 'node:process'
 import { useLogg } from '@guiiai/logg'
 
@@ -9,6 +9,14 @@ export const openaiConfig: OpenAIConfig = {
   apiKey: '',
   baseUrl: '',
   model: 'gpt-4o',
+}
+
+export const factorioConfig: FactorioConfig = {
+  playerName: '',
+}
+
+export const debugConfig: DebugConfig = {
+  agentSay: false,
 }
 
 export const rconClientConfig: RconConfig = {
@@ -76,6 +84,14 @@ export function initEnv() {
   wsClientConfig.wsHost = env.FACTORIO_WS_HOST || 'localhost'
   wsClientConfig.wsPort = Number.parseInt(env.FACTORIO_WS_PORT || '8080')
 
+  // In-game player the agent controls. Empty = auto-detect first connected
+  // player (best-effort when the agent boots before the human joins).
+  factorioConfig.playerName = (env.FACTORIO_PLAYER_NAME || '').trim()
+
+  // When false, the agent stays quiet in the in-game chat and only replies
+  // when spoken to. Node-side logs are unaffected. Set true for full chatter.
+  debugConfig.agentSay = (env.DEBUG_AGENT_SAY || 'false').trim().toLowerCase() === 'true'
+
   // AIRI "general" bridge. Opt-in: the agent stays standalone unless AIRI_ENABLED=true,
   // so existing local-test workflows (agent + Factorio only) are unaffected.
   airiConfig.enabled = (env.AIRI_ENABLED || 'false').trim().toLowerCase() === 'true'
@@ -107,5 +123,5 @@ export function initEnv() {
   learningConfig.maxOpsPerSkill = Number.parseInt(env.LEARNING_MAX_OPS || '200')
   learningConfig.maxRetries = Number.parseInt(env.LEARNING_MAX_RETRIES || '4')
 
-  logger.withFields({ openaiConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
+  logger.withFields({ openaiConfig, factorioConfig, debugConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
 }

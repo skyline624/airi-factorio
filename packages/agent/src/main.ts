@@ -10,8 +10,9 @@ import { backOff } from 'exponential-backoff'
 import { connect } from 'it-ws'
 import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
-import { airiConfig, autonomousConfig, initEnv, learningConfig, openaiConfig, rconClientConfig, wsClientConfig } from './config'
+import { airiConfig, autonomousConfig, debugConfig, factorioConfig, initEnv, learningConfig, openaiConfig, rconClientConfig, wsClientConfig } from './config'
 import { startLearningSession } from './learning/session'
+import { buildScreenshotCommand } from './learning/state'
 import { createMessageHandler } from './llm/message-handler'
 import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
@@ -34,6 +35,16 @@ const eventMinIntervalMs = new Map<string, number>([
   ['attack_ended', 0],
   ['died', 0],
 ])
+
+// Gated `say`: when DEBUG_AGENT_SAY=false, the agent's action chatter
+// (new objectives, success/failure summaries, autonomous decisions) is
+// suppressed in the in-game chat. Chat replies to direct human messages
+// are routed through `rconSay` directly and bypass this gate.
+const gatedSay = async (message: string): Promise<void> => {
+  if (debugConfig.agentSay) {
+    await rconSay(message)
+  }
+}
 
 function shouldForwardEvent(message: PlayerEventMessage): boolean {
   const now = Date.now()
@@ -92,7 +103,7 @@ function enqueueAgentTask(task: () => Promise<void>): Promise<void> {
 async function visionDecide(tickContent: string): Promise<LLMMessage | null> {
   const shot = 'airi-auto-view.png'
   try {
-    await rconCommand(`/c local p=game.get_player(1); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end`)
+    await rconCommand(buildScreenshotCommand(shot, factorioConfig.playerName))
   }
   catch { /* ignore screenshot dispatch errors */ }
   await new Promise(resolve => setTimeout(resolve, 1500))
@@ -156,7 +167,8 @@ async function main() {
     const raw = async (input: string): Promise<string> => rconCommand(input)
     const session = startLearningSession({
       raw,
-      say: async (message) => { await rconSay(message) },
+      say: gatedSay,
+      playerName: factorioConfig.playerName,
       curriculumEnabled: learningConfig.curriculumEnabled,
       ultimateGoal: learningConfig.ultimateGoal,
       maxObjectives: learningConfig.maxObjectives,
@@ -223,9 +235,7 @@ async function main() {
       execute: async (commands) => {
         await rconCommand(`/c ${commands.join(';')}`)
       },
-      say: async (message) => {
-        await rconSay(message)
-      },
+      say: gatedSay,
     })
 
     for await (const buffer of ws.source) {

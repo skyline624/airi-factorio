@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) and snake_case JSON keys */
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { diffState, parseGameState, parseScan } from './state'
+import { buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diffState, parseGameState, parseScan } from './state'
 
 describe('parseGameState', () => {
   it('parses a normal snapshot and maps snake_case fields', () => {
@@ -64,6 +64,68 @@ describe('diffState', () => {
     const d = diffState(s, s)
     expect(d).toContain('Inventory gained: (none)')
     expect(d).toContain('Entities built: (none)')
+  })
+})
+
+describe('buildPlayerResolveSnippet', () => {
+  it('auto-detects (empty name): targets nothing, scans connected players, falls back to get_player(1)', () => {
+    const s = buildPlayerResolveSnippet('')
+    expect(s).toContain('TARGET=\'\'')
+    expect(s).toContain('q.connected')
+    // Legacy fallback retained so the RCON echo still mentions get_player(1).
+    expect(s).toContain('game.get_player(1)')
+  })
+
+  it('targets an explicit name via a name-match loop', () => {
+    const s = buildPlayerResolveSnippet('Alice')
+    expect(s).toContain('TARGET=\'Alice\'')
+    expect(s).toContain('q.name==TARGET')
+  })
+
+  it('escapes a single quote so a name cannot break out of the Lua literal', () => {
+    const s = buildPlayerResolveSnippet('O\'Brien')
+    // The quote is backslash-escaped; the literal stays one string.
+    expect(s).toContain('TARGET=\'O\\\'Brien\'')
+  })
+
+  it('neutralises an injection attempt in the player name', () => {
+    // A name crafted to close the literal and run extra Lua must be defanged.
+    const evil = '\'); game.print(\'pwned\'); local _=(\''
+    const s = buildPlayerResolveSnippet(evil)
+    // No unescaped `');` sequence escapes the assignment.
+    expect(s).not.toContain('TARGET=\'\');')
+    expect(s).toContain('\\\'')
+  })
+
+  it('escapes backslashes, newlines and carriage returns', () => {
+    expect(buildPlayerResolveSnippet('a\\b')).toContain('a\\\\b')
+    expect(buildPlayerResolveSnippet('a\nb')).toContain('a\\nb')
+    expect(buildPlayerResolveSnippet('a\rb')).toContain('a\\rb')
+  })
+})
+
+describe('buildCaptureStateCommand', () => {
+  it('is a /c command that captures inventory + entities for the resolved player', () => {
+    const cmd = buildCaptureStateCommand('')
+    expect(cmd.startsWith('/c ')).toBe(true)
+    expect(cmd).toContain('rcon.print')
+    expect(cmd).toContain('get_main_inventory')
+    expect(cmd).toContain('resolve()')
+  })
+
+  it('matches the default CAPTURE_STATE_COMMAND when the name is empty', () => {
+    expect(buildCaptureStateCommand('')).toBe(CAPTURE_STATE_COMMAND)
+  })
+})
+
+describe('buildScreenshotCommand', () => {
+  it('takes a screenshot from the resolved player POV at the given path', () => {
+    const cmd = buildScreenshotCommand('shot.png', 'Bob')
+    expect(cmd.startsWith('/c ')).toBe(true)
+    expect(cmd).toContain('take_screenshot')
+    expect(cmd).toContain('path=\'shot.png\'')
+    expect(cmd).toContain('by_player=p')
+    expect(cmd).toContain('TARGET=\'Bob\'')
   })
 })
 

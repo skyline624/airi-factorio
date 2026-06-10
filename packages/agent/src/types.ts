@@ -63,3 +63,22 @@ export interface AiriConfig {
   /** Optional auth token (empty for the local desktop hub). */
   token: string
 }
+
+export interface FactorioConfig {
+  /**
+   * In-game player name the agent controls. Empty = auto-detect the first
+   * connected player. Useful when the agent boots before a human joins, or
+   * when multiple humans play on the same server.
+   */
+  playerName: string
+}
+
+export interface DebugConfig {
+  /**
+   * When true, the agent broadcasts its action messages in the in-game chat
+   * (new objectives, success/failure summaries, autonomous decisions). When
+   * false, the chat stays silent and the agent only replies when spoken to.
+   * Node-side logs are always emitted.
+   */
+  agentSay: boolean
+}

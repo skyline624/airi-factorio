@@ -16,6 +16,11 @@ export interface LearningSessionDeps {
   raw: (input: string) => Promise<string>
   /** Say a line in the in-game chat. */
   say: (message: string) => Promise<void>
+  /**
+   * In-game player name the agent controls. Empty = auto-detect first
+   * connected player. Bound into the captureState closure.
+   */
+  playerName?: string
   /** When true, the curriculum proposes objectives; otherwise the fixed `objectives` list is used. */
   curriculumEnabled: boolean
   /** The end goal the curriculum works toward. */
@@ -53,7 +58,7 @@ export interface LearningController {
  */
 export function startLearningSession(deps: LearningSessionDeps): LearningController {
   const settleBus = createSettleBus(deps.settleTimeoutMs)
-  const captureState = (): Promise<GameState> => captureStateFn(deps.raw)
+  const captureState = (): Promise<GameState> => captureStateFn(deps.raw, deps.playerName ?? '')
   const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 32)'))
 
   const library = createSkillLibrary({

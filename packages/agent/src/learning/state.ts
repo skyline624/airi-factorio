@@ -1,13 +1,41 @@
 import type { GameState, ScanEntity, ScanResult } from './types'
 import { extractLastJsonLine } from './json'
 
+// Lua-level player resolver shared by the state-capture snippet and the
+// vision screenshot snippet. Strategy: explicit name (if non-empty) → first
+// connected player → game.get_player(1) (legacy fallback, kept so the
+// prefix echoed by RCON still contains `get_player(1)` for test parsers).
+//
+// `playerName` is injected as a Lua string literal; we escape it defensively
+// against a `'`, `\`, or newline/CR sneaking in via env vars (a bare newline or
+// CR would otherwise break the single-line `/c` command).
+function luaString(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`
+}
+
+export function buildPlayerResolveSnippet(playerName: string): string {
+  return `local TARGET=${luaString(playerName)} local function resolve() if TARGET and TARGET~='' then for _,q in pairs(game.players) do if q.valid and q.name==TARGET then return q end end end for _,q in pairs(game.players) do if q.valid and q.connected then return q end end return game.get_player(1) end`
+}
+
 // A self-contained Lua snippet that gathers a compact world snapshot and prints
 // it as JSON. Sent as a raw `/c` console command, so NO autorio mod change is
 // needed. `helpers.table_to_json` is the Factorio 2.0 API (older saves expose
 // `game.table_to_json`); we pick whichever exists.
-const CAPTURE_BODY = `local p=game.get_player(1) if not p then rcon.print('{}') return end local inv={} local m=p.get_main_inventory() if m then for _,c in pairs(m.get_contents()) do inv[c.name]=(inv[c.name] or 0)+c.count end end local ent={} for _,e in pairs(p.surface.find_entities_filtered{force=p.force,position=p.position,radius=200}) do if e.name~='character' then ent[e.name]=(ent[e.name] or 0)+1 end end local rs=nil if p.force.current_research then rs=p.force.current_research.name end local tc=0 for _,t in pairs(p.force.technologies) do if t.researched then tc=tc+1 end end local ch=p.character local tj=helpers and helpers.table_to_json or game.table_to_json rcon.print(tj({tick=game.tick,position=p.position,health=ch and ch.health or nil,max_health=ch and ch.max_health or nil,inventory=inv,entities=ent,current_research=rs,researched_count=tc}))`
+function buildCaptureBody(playerName: string): string {
+  return `${buildPlayerResolveSnippet(playerName)} local p=resolve() if not p then rcon.print('{}') return end local inv={} local m=p.get_main_inventory() if m then for _,c in pairs(m.get_contents()) do inv[c.name]=(inv[c.name] or 0)+c.count end end local ent={} for _,e in pairs(p.surface.find_entities_filtered{force=p.force,position=p.position,radius=200}) do if e.name~='character' then ent[e.name]=(ent[e.name] or 0)+1 end end local rs=nil if p.force.current_research then rs=p.force.current_research.name end local tc=0 for _,t in pairs(p.force.technologies) do if t.researched then tc=tc+1 end end local ch=p.character local tj=helpers and helpers.table_to_json or game.table_to_json rcon.print(tj({tick=game.tick,position=p.position,health=ch and ch.health or nil,max_health=ch and ch.max_health or nil,inventory=inv,entities=ent,current_research=rs,researched_count=tc}))`
+}
 
-export const CAPTURE_STATE_COMMAND = `/c ${CAPTURE_BODY}`
+export const CAPTURE_STATE_COMMAND = `/c ${buildCaptureBody('')}`
+
+/** Build a `/c` command that captures the world for the given player name (or auto-detect if empty). */
+export function buildCaptureStateCommand(playerName: string): string {
+  return `/c ${buildCaptureBody(playerName)}`
+}
+
+/** Build a `/c` command that takes a screenshot from the given player's POV. */
+export function buildScreenshotCommand(shot: string, playerName: string): string {
+  return `/c ${buildPlayerResolveSnippet(playerName)} local p=resolve(); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end`
+}
 
 /** An empty Lua table may serialise as `[]` (depending on version); treat arrays and junk as an empty record. */
 function asCountRecord(value: unknown): Record<string, number> {
@@ -45,8 +73,8 @@ export function parseGameState(output: string): GameState {
 }
 
 /** Capture the current world state via a raw `/c` command and the given RCON sender. */
-export async function captureState(raw: (input: string) => Promise<string>): Promise<GameState> {
-  return parseGameState(await raw(CAPTURE_STATE_COMMAND))
+export async function captureState(raw: (input: string) => Promise<string>, playerName?: string): Promise<GameState> {
+  return parseGameState(await raw(buildCaptureStateCommand(playerName ?? '')))
 }
 
 function diffRecord(before: Record<string, number>, after: Record<string, number>): { gained: string[], lost: string[] } {
