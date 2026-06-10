@@ -165,7 +165,7 @@ export function create_tools_remote_interface() {
         rcon.print('{}')
         return false
       }
-      const r = math.min(radius > 0 ? radius : 32, 64)
+      const r = math.min(radius > 0 ? radius : 32, 128)
       const surface = player.surface
 
       const entities: { name: string, type: string, x: number, y: number, direction: string, status: string }[] = []
@@ -234,6 +234,55 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ tick: game.tick, origin: player.position, radius: -1, entities, resources: {} }))
       return true
     },
+    // Locate the NEAREST thing of a given name well beyond scan range — the fix for
+    // the agent wandering off / never finding water. `scan_area` is player-local and
+    // capped; this searches a wide radius and returns just {name,x,y,distance} (or {}
+    // if none). Handles WATER, which is a tile (never returned by entity scans) — so
+    // the agent can actually locate a shore to place an offshore-pump.
+    find_nearest: (name: string) => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print('{}')
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+      let bx = 0
+      let by = 0
+      let bd = -1
+      if (name === 'water' || name === 'deepwater') {
+        const tiles = surface.find_tiles_filtered({ position: pp, radius: 400, name: ['water', 'deepwater', 'water-shallow', 'water-mud', 'deepwater-green', 'water-green'] })
+        for (const t of tiles) {
+          const dx = t.position.x - pp.x
+          const dy = t.position.y - pp.y
+          const d = dx * dx + dy * dy
+          if (bd < 0 || d < bd) {
+            bd = d
+            bx = t.position.x
+            by = t.position.y
+          }
+        }
+      }
+      else {
+        for (const e of surface.find_entities_filtered({ name, position: pp, radius: 400 })) {
+          const dx = e.position.x - pp.x
+          const dy = e.position.y - pp.y
+          const d = dx * dx + dy * dy
+          if (bd < 0 || d < bd) {
+            bd = d
+            bx = math.floor(e.position.x * 10) / 10
+            by = math.floor(e.position.y * 10) / 10
+          }
+        }
+      }
+      if (bd < 0) {
+        rcon.print('{}')
+      }
+      else {
+        rcon.print(helpers.table_to_json({ name, x: bx, y: by, distance: math.floor(math.sqrt(bd)) }))
+      }
+      return true
+    },
     // Authoritative lookup for the learning agent so it stops GUESSING recipes /
     // machine mechanics. Returns JSON { name, recipe?, entity? } with camelCase
     // keys matching the agent's RecipeInfo/EntityInfo types. A missing key means
@@ -296,6 +345,104 @@ export function create_tools_remote_interface() {
       }
 
       rcon.print(helpers.table_to_json(result))
+      return true
+    },
+    // RESEARCH op: the full production chain for an item, read straight from the
+    // game's recipe graph (so the agent doesn't need the tech tree in its prompt or
+    // its memory). Returns { raw: {resource: amount to MINE}, steps: [intermediates
+    // to make, leaves-first, with craft|smelting category + enabled], locked: [steps
+    // whose recipe isn't researched yet] }. Recursion is depth-capped + cycle-guarded.
+    craft_plan: (item: string, count: number = 1) => {
+      const force = game.forces.player
+      const raw: Record<string, number> = {}
+      const amounts: Record<string, number> = {}
+      const categories: Record<string, string> = {}
+      const enabled: Record<string, boolean> = {}
+      const order: string[] = []
+      const ordered: Record<string, boolean> = {}
+      const in_progress: Record<string, boolean> = {}
+
+      function expand(name: string, need: number, depth: number): void {
+        const recipe = force.recipes[name]
+        if (recipe === undefined || depth > 8 || in_progress[name]) {
+          raw[name] = (raw[name] ?? 0) + need
+          return
+        }
+        let per = 1
+        for (const p of recipe.products) {
+          if (p.name === name && p.amount !== undefined && p.amount > 0) {
+            per = p.amount
+          }
+        }
+        const crafts = math.ceil(need / per)
+        in_progress[name] = true
+        for (const ing of recipe.ingredients) {
+          expand(ing.name, ing.amount * crafts, depth + 1)
+        }
+        in_progress[name] = false
+        amounts[name] = (amounts[name] ?? 0) + need
+        categories[name] = recipe.category
+        enabled[name] = recipe.enabled
+        if (!ordered[name]) {
+          ordered[name] = true
+          order.push(name)
+        }
+      }
+      expand(item, count, 0)
+
+      const steps: { name: string, amount: number, category: string, enabled: boolean }[] = []
+      const locked: string[] = []
+      for (const n of order) {
+        steps.push({ name: n, amount: math.ceil(amounts[n] ?? 0), category: categories[n] ?? 'crafting', enabled: enabled[n] ?? true })
+        if (!(enabled[n] ?? true)) {
+          locked.push(n)
+        }
+      }
+      rcon.print(helpers.table_to_json({ item, count, raw, steps, locked }))
+      return true
+    },
+    // RESEARCH op: which technology unlocks an item's recipe (+ its science cost and
+    // prerequisites), so the agent knows what to research to reach a locked item.
+    tech_for: (item: string) => {
+      const force = game.forces.player
+      const recipe = force.recipes[item]
+      if (recipe !== undefined && recipe.enabled) {
+        rcon.print(helpers.table_to_json({ item, unlocked: true }))
+        return true
+      }
+      for (const [tech_name, tech] of Object.entries(prototypes.technology)) {
+        for (const eff of tech.effects ?? []) {
+          if (eff.type === 'unlock-recipe' && eff.recipe === item) {
+            const ft = force.technologies[tech_name]
+            const science = tech.research_unit_ingredients.map(i => ({ name: i.name, amount: i.amount }))
+            const prerequisites: string[] = []
+            for (const pname of Object.keys(tech.prerequisites)) {
+              prerequisites.push(pname)
+            }
+            rcon.print(helpers.table_to_json({ item, unlocked: false, tech: tech_name, researched: ft !== undefined ? ft.researched : false, science, prerequisites }))
+            return true
+          }
+        }
+      }
+      rcon.print(helpers.table_to_json({ item, unlocked: false }))
+      return true
+    },
+    // RESEARCH op: reverse lookup — what an item is FOR (the recipes that consume it),
+    // so the agent can reason about an item's utility without a glossary in its prompt.
+    used_in: (item: string) => {
+      const products: string[] = []
+      for (const [recipe_name, recipe] of game.forces.player.recipes) {
+        if (products.length >= 40) {
+          break
+        }
+        for (const ing of recipe.ingredients) {
+          if (ing.name === item) {
+            products.push(recipe_name)
+            break
+          }
+        }
+      }
+      rcon.print(helpers.table_to_json({ item, usedIn: products }))
       return true
     },
   })

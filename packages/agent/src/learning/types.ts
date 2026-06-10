@@ -99,6 +99,36 @@ export interface EntityInfo {
   craftingSpeed?: number
 }
 
+/** Result of `ops.findNearest`: the nearest matching entity/resource/water tile + how far. */
+export interface NearestResult {
+  name: string
+  x: number
+  y: number
+  distance: number
+}
+
+/** Full production chain from `ops.craftPlan`, read off the game's recipe graph. */
+export interface CraftPlan {
+  item: string
+  count: number
+  /** raw resources to MINE/gather: name -> total amount. */
+  raw: Record<string, number>
+  /** intermediates to make, leaves-first. category 'crafting' = hand-craft; 'smelting' = needs a furnace. */
+  steps: { name: string, amount: number, category: string, enabled: boolean }[]
+  /** steps whose recipe isn't researched yet — research these (see `techFor`) first. */
+  locked: string[]
+}
+
+/** Tech-unlock info from `ops.techFor`: what (if anything) you must research to make an item. */
+export interface TechInfo {
+  item: string
+  unlocked: boolean
+  tech?: string
+  researched?: boolean
+  science?: { name: string, amount: number }[]
+  prerequisites?: string[]
+}
+
 /**
  * The closed capability surface exposed to skill code inside the sandbox.
  * It maps 1:1 onto the `autorio_operations` primitives plus perception, so the
@@ -114,6 +144,14 @@ export interface Ops {
   getRecipe: (name: string) => Promise<RecipeInfo | null>
   /** Look up a placeable entity's mechanics (type, energy/fuel need, tile size, what a drill mines). Null if not a known entity. */
   describeEntity: (name: string) => Promise<EntityInfo | null>
+  /** Locate the NEAREST thing of a name far beyond scan range — ore/coal/water (water is a tile, scan never sees it). Null if none within ~400 tiles. */
+  findNearest: (name: string) => Promise<NearestResult | null>
+  /** RESEARCH the full production chain for an item (raw materials to mine + intermediates to make, in order + what's research-locked). Use this instead of remembering the tech tree. */
+  craftPlan: (item: string, count?: number) => Promise<CraftPlan | null>
+  /** RESEARCH which technology unlocks an item's recipe (+ its science cost & prerequisites). `unlocked:true` = already available. */
+  techFor: (item: string) => Promise<TechInfo | null>
+  /** RESEARCH what an item is FOR: the recipes that consume it. Empty if it's an end-product / unused. */
+  usedIn: (item: string) => Promise<string[]>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
   placeEntity: (entityName: string) => Promise<OpResult>

@@ -148,6 +148,10 @@ function makeMockOps(): Ops {
     scan: async () => ({ entities: [], resources: {} }),
     getRecipe: async () => null,
     describeEntity: async () => null,
+    findNearest: async () => null,
+    craftPlan: async () => null,
+    techFor: async () => null,
+    usedIn: async () => [],
   } as Ops
 }
 

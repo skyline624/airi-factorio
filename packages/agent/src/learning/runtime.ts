@@ -1,5 +1,5 @@
 import type { SettleBus } from './settle-bus'
-import type { EntityInfo, GameState, OpResult, Ops, RecipeInfo, ScanResult, SettleResult } from './types'
+import type { CraftPlan, EntityInfo, GameState, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, TechInfo } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
 import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
@@ -147,6 +147,27 @@ export function createOps(deps: OpsDeps): Ops {
       bumpOpCount()
       const d = extractLastJsonLine<{ entity?: EntityInfo }>(await deps.raw(`/c remote.call('autorio_tools','describe',${luaArg(name)})`))
       return (d && typeof d === 'object' && d.entity) ? d.entity : null
+    },
+    findNearest: async (name: string): Promise<NearestResult | null> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<NearestResult>(await deps.raw(`/c remote.call('autorio_tools','find_nearest',${luaArg(name)})`))
+      return (d && typeof d === 'object' && typeof d.x === 'number') ? d : null
+    },
+    craftPlan: async (item: string, count = 1): Promise<CraftPlan | null> => {
+      bumpOpCount()
+      const c = Math.max(1, Math.floor(count))
+      const d = extractLastJsonLine<CraftPlan>(await deps.raw(`/c remote.call('autorio_tools','craft_plan',${luaArg(item)},${c})`))
+      return (d && typeof d === 'object' && Array.isArray(d.steps)) ? d : null
+    },
+    techFor: async (item: string): Promise<TechInfo | null> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<TechInfo>(await deps.raw(`/c remote.call('autorio_tools','tech_for',${luaArg(item)})`))
+      return (d && typeof d === 'object' && typeof d.unlocked === 'boolean') ? d : null
+    },
+    usedIn: async (item: string): Promise<string[]> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ usedIn?: string[] }>(await deps.raw(`/c remote.call('autorio_tools','used_in',${luaArg(item)})`))
+      return (d && Array.isArray(d.usedIn)) ? d.usedIn : []
     },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
