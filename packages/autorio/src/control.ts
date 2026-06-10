@@ -406,6 +406,7 @@ script.on_event(defines.events.on_player_mined_entity, (unused_event: OnPlayerMi
   }
 
   storage.player_state.parameters_mine_entity.count = storage.player_state.parameters_mine_entity.count - 1
+  storage.player_state.parameters_mine_entity.stall_ticks = 0 // real progress — reset the out-of-reach guard
 
   if (storage.player_state.parameters_mine_entity.count <= 0) {
     log('[AUTORIO] Mining task complete, switching to IDLE state')
@@ -614,12 +615,24 @@ function state_walking_to_entity(player: LuaPlayer) {
     }
   }
 
-  // find nearest entity and calculate path
-  const entities = player.surface.find_entities_filtered({
-    position: player.position,
-    radius: storage.player_state.parameters_walk_to_entity.search_radius,
-    name: storage.player_state.parameters_walk_to_entity.entity_name, // TODO: catch entity name not found error
-  })
+  // find nearest entity and calculate path. The agent passes an arbitrary string;
+  // find_entities_filtered{name=...} THROWS and crashes on_tick if it isn't a real
+  // entity NAME (e.g. 'tree', which is a TYPE — trees are named tree-01, …). Resolve
+  // it: a real prototype name -> name filter; otherwise treat it as a type ('tree',
+  // 'resource', …); if it's neither, fail cleanly instead of crashing the whole mod.
+  const target_name = storage.player_state.parameters_walk_to_entity.entity_name
+  const search_radius = storage.player_state.parameters_walk_to_entity.search_radius
+  let entities: LuaEntity[]
+  try {
+    entities = prototypes.entity[target_name] !== undefined
+      ? player.surface.find_entities_filtered({ position: player.position, radius: search_radius, name: target_name })
+      : player.surface.find_entities_filtered({ position: player.position, radius: search_radius, type: target_name })
+  }
+  catch {
+    log(`[AUTORIO] [ERROR] '${target_name}' is not a valid entity name or type, aborting walk`)
+    task_manager.cancel_all_tasks()
+    return
+  }
 
   if (entities.length === 0) {
     log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_walk_to_entity.entity_name} found in ${storage.player_state.parameters_walk_to_entity.search_radius}m radius, reverting to IDLE state`)
@@ -697,6 +710,19 @@ function state_mining(player: LuaPlayer) {
   }
 
   if (player.mining_state.mining) {
+    storage.player_state.parameters_mine_entity.stall_ticks = 0
+    return
+  }
+
+  // About to (re)issue a mine. If we keep doing this and nothing ever gets mined,
+  // the target sits within the search radius but BEYOND the character's mining reach
+  // (the agent didn't walk close enough) — so abort cleanly instead of re-issuing
+  // "Started mining" forever. on_player_mined_entity resets this on real progress.
+  const mp = storage.player_state.parameters_mine_entity
+  mp.stall_ticks = (mp.stall_ticks ?? 0) + 1
+  if ((mp.stall_ticks ?? 0) > 90) {
+    log(`[AUTORIO] [ERROR] '${mp.entity_name}' is out of mining reach (walk closer first), aborting mine`)
+    task_manager.cancel_all_tasks()
     return
   }
 
@@ -705,11 +731,21 @@ function state_mining(player: LuaPlayer) {
     return
   }
 
-  const entities = player.surface.find_entities_filtered({
-    position: player.position,
-    radius: 5, // but player can only mine entities within 2 tiles
-    name: storage.player_state.parameters_mine_entity.entity_name,
-  })
+  // Same name-vs-type guard as walk: 'tree' is a TYPE (the agent mines trees for
+  // wood), so a raw name filter would crash on_tick. Resolve name -> type -> clean fail.
+  const mine_name = storage.player_state.parameters_mine_entity.entity_name
+  let entities: LuaEntity[]
+  try {
+    entities = prototypes.entity[mine_name] !== undefined
+      ? player.surface.find_entities_filtered({ position: player.position, radius: 5, name: mine_name })
+      : player.surface.find_entities_filtered({ position: player.position, radius: 5, type: mine_name })
+  }
+  catch {
+    log(`[AUTORIO] [ERROR] '${mine_name}' is not a valid entity name or type, cannot mine`)
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return
+  }
 
   if (entities.length === 0) {
     log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_mine_entity.entity_name} found within reach to mine`)
@@ -1166,32 +1202,55 @@ function state_researching(player: LuaPlayer) {
 }
 
 function state_walking_direct(player: LuaPlayer) {
-  if (!storage.player_state.parameters_walking_direct) {
+  const params = storage.player_state.parameters_walking_direct
+  if (!params) {
     log('[AUTORIO] No parameters found when walking directly')
     return
   }
 
-  const target = storage.player_state.parameters_walking_direct.target_position
-
-  if (target) {
-    const direction = get_direction(player.position, target)
-    player.walking_state = {
-      walking: true,
-      direction,
-    }
-
-    if (((target.x - player.position.x) ** 2 + (target.y - player.position.y) ** 2) < 2) {
-      log('[AUTORIO] Reached target, switching to IDLE state')
-      player.walking_state = { walking: false, direction: player.walking_state.direction }
-      task_manager.reset_task_state()
-      task_manager.next_task()
-    }
-  }
-  else {
+  const target = params.target_position
+  if (!target) {
     log('[AUTORIO] No target position, switching to IDLE state')
     task_manager.reset_task_state()
     task_manager.next_task()
+    return
   }
+
+  // Reached?
+  if (((target.x - player.position.x) ** 2 + (target.y - player.position.y) ** 2) < 2) {
+    log('[AUTORIO] Reached target, switching to IDLE state')
+    player.walking_state = { walking: false, direction: player.walking_state.direction }
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return
+  }
+
+  // Stuck handling: a straight-line walk can't route around trees, so when the
+  // character stops advancing (wedged in a forest), MINE the obstacles around it
+  // and keep heading for the target — bounded so it fails cleanly if truly walled in.
+  const last = params.last_position
+  if (last) {
+    const moved = (player.position.x - last.x) ** 2 + (player.position.y - last.y) ** 2
+    params.stuck_ticks = moved < STUCK_PROGRESS_EPS * STUCK_PROGRESS_EPS ? (params.stuck_ticks ?? 0) + 1 : 0
+  }
+  params.last_position = { x: player.position.x, y: player.position.y }
+
+  if ((params.stuck_ticks ?? 0) >= STUCK_TICKS) {
+    params.stuck_ticks = 0
+    params.clears = (params.clears ?? 0) + 1
+    if ((params.clears ?? 0) > 40) {
+      log('[AUTORIO] [ERROR] Wedged on the direct walk after clearing many obstacles, aborting')
+      player.walking_state = { walking: false, direction: player.walking_state.direction }
+      task_manager.cancel_all_tasks()
+      return
+    }
+    const cleared = clear_obstacles_near(player)
+    if (cleared > 0) {
+      log(`[AUTORIO] Direct walk wedged — cleared ${cleared} blocking tree(s)/rock(s)`)
+    }
+  }
+
+  player.walking_state = { walking: true, direction: get_direction(player.position, target) }
 }
 
 function state_attacking(player: LuaPlayer) {

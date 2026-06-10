@@ -37,6 +37,12 @@ export interface PlayerParametersWalkToEntity {
 export interface PlayerParametersWalkingDirect {
   type: TaskStates.WALKING_DIRECT
   target_position: MapPositionStruct | null
+  // Stuck handling for the dumb straight-line walk (the fallback when pathfinding
+  // failed outright). When the character stops advancing — wedged in trees — we
+  // mine the organic obstacles around it and keep going, bounded by a clear cap.
+  last_position?: MapPositionStruct
+  stuck_ticks?: number
+  clears?: number
 }
 
 export interface PlayerParametersMineEntity {
@@ -44,6 +50,10 @@ export interface PlayerParametersMineEntity {
   entity_name: string
   count: number
   position?: MapPositionStruct
+  // Ticks spent re-issuing a mine without anything actually getting mined — i.e. the
+  // target is within the search radius but beyond the character's mining REACH. Used
+  // to abort cleanly instead of spamming "Started mining" forever. Reset on a mine.
+  stall_ticks?: number
 }
 
 export interface PlayerParametersPlaceEntity {
