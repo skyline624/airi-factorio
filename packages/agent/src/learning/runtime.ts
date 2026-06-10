@@ -1,5 +1,5 @@
 import type { SettleBus } from './settle-bus'
-import type { GameState, OpResult, Ops, ScanResult, SettleResult } from './types'
+import type { EntityInfo, GameState, OpResult, Ops, RecipeInfo, ScanResult, SettleResult } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
 import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
@@ -137,6 +137,16 @@ export function createOps(deps: OpsDeps): Ops {
       bumpOpCount()
       const r = Math.max(1, Math.floor(radius))
       return parseScan(await deps.raw(`/c remote.call('autorio_tools','scan_area',${r})`))
+    },
+    getRecipe: async (name: string): Promise<RecipeInfo | null> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ recipe?: RecipeInfo }>(await deps.raw(`/c remote.call('autorio_tools','describe',${luaArg(name)})`))
+      return (d && typeof d === 'object' && d.recipe) ? d.recipe : null
+    },
+    describeEntity: async (name: string): Promise<EntityInfo | null> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ entity?: EntityInfo }>(await deps.raw(`/c remote.call('autorio_tools','describe',${luaArg(name)})`))
+      return (d && typeof d === 'object' && d.entity) ? d.entity : null
     },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),

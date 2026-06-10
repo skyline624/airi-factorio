@@ -202,5 +202,69 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ tick: game.tick, origin: player.position, radius: r, entities, resources }))
       return true
     },
+    // Authoritative lookup for the learning agent so it stops GUESSING recipes /
+    // machine mechanics. Returns JSON { name, recipe?, entity? } with camelCase
+    // keys matching the agent's RecipeInfo/EntityInfo types. A missing key means
+    // "no recipe" / "not a placeable entity" (the agent reads that as null).
+    describe: (name: string) => {
+      const result: Record<string, unknown> = { name }
+
+      // Recipe (force-specific so `enabled` reflects what's actually unlocked).
+      const player = get_player()
+      if (player !== undefined) {
+        const recipe = player.force.recipes[name]
+        if (recipe !== undefined) {
+          result.recipe = {
+            name,
+            ingredients: recipe.ingredients.map(i => ({ name: i.name, amount: i.amount })),
+            products: recipe.products.map(p => ({ name: p.name, amount: p.amount ?? 1 })),
+            enabled: recipe.enabled,
+            category: recipe.category,
+          }
+        }
+      }
+
+      // Placeable-entity mechanics (energy source, footprint, what a drill mines).
+      const proto = prototypes.entity[name]
+      if (proto !== undefined) {
+        let energy_source = 'none'
+        if (proto.electric_energy_source_prototype) {
+          energy_source = 'electric'
+        }
+        else if (proto.burner_prototype) {
+          energy_source = 'burner'
+        }
+        else if (proto.heat_energy_source_prototype) {
+          energy_source = 'heat'
+        }
+        else if (proto.fluid_energy_source_prototype) {
+          energy_source = 'fluid'
+        }
+
+        const box = proto.collision_box
+        const entity: Record<string, unknown> = {
+          name,
+          type: proto.type,
+          energySource: energy_source,
+          needsFuel: energy_source === 'burner',
+          size: {
+            w: math.ceil(box.right_bottom.x - box.left_top.x),
+            h: math.ceil(box.right_bottom.y - box.left_top.y),
+          },
+        }
+        // Guard type-specific props — accessing them on the wrong prototype can error.
+        if (proto.type === 'mining-drill') {
+          entity.miningSpeed = proto.mining_speed
+          entity.resourceCategories = proto.resource_categories ? Object.keys(proto.resource_categories) : []
+        }
+        if (proto.type === 'furnace' || proto.type === 'assembling-machine') {
+          entity.craftingSpeed = proto.get_crafting_speed()
+        }
+        result.entity = entity
+      }
+
+      rcon.print(helpers.table_to_json(result))
+      return true
+    },
   })
 }

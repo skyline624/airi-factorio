@@ -68,6 +68,37 @@ export interface ScanResult {
   resources: Record<string, { count: number, x: number, y: number }>
 }
 
+/** Authoritative recipe lookup from `ops.getRecipe` (real game data, not a guess). */
+export interface RecipeInfo {
+  name: string
+  /** what you must hold to craft it */
+  ingredients: { name: string, amount: number }[]
+  /** what crafting it yields */
+  products: { name: string, amount: number }[]
+  /** true if the recipe is unlocked for the player's force */
+  enabled: boolean
+  category: string
+}
+
+/** Placeable-entity mechanics lookup from `ops.describeEntity` (real prototype data). */
+export interface EntityInfo {
+  name: string
+  /** 'mining-drill' | 'furnace' | 'transport-belt' | 'inserter' | 'assembling-machine' | … */
+  type: string
+  /** 'burner' (needs fuel) | 'electric' (needs power) | 'heat' | 'fluid' | 'none' */
+  energySource: string
+  /** true for burner machines — they must be loaded with a fuel like coal */
+  needsFuel: boolean
+  /** tile footprint, for adjacency / not overlapping when placing */
+  size: { w: number, h: number }
+  /** mining drills only: how fast it mines */
+  miningSpeed?: number
+  /** mining drills only: which resource categories it can mine (sit it ON a matching resource) */
+  resourceCategories?: string[]
+  /** furnaces / assemblers only: crafting speed */
+  craftingSpeed?: number
+}
+
 /**
  * The closed capability surface exposed to skill code inside the sandbox.
  * It maps 1:1 onto the `autorio_operations` primitives plus perception, so the
@@ -79,6 +110,10 @@ export interface Ops {
   getState: () => Promise<GameState>
   /** Structured spatial scan: nearby entities (position/direction/status) + resource patches. */
   scan: (radius?: number) => Promise<ScanResult>
+  /** Look up the EXACT recipe for an item/machine (ingredients + products). Null if unknown/no recipe. Use this instead of guessing recipes. */
+  getRecipe: (name: string) => Promise<RecipeInfo | null>
+  /** Look up a placeable entity's mechanics (type, energy/fuel need, tile size, what a drill mines). Null if not a known entity. */
+  describeEntity: (name: string) => Promise<EntityInfo | null>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
   placeEntity: (entityName: string) => Promise<OpResult>

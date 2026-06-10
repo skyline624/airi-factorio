@@ -14,6 +14,8 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` it and ch
 
 - `await ops.getState()` → fresh snapshot `{ inventory: {item: count}, entities: {name: count}, position, health, currentResearch }`. Use it to check progress.
 - `await ops.scan(radius?)` → `{ origin:{x,y}, entities:[{name,type,x,y,direction,status}], resources:{name:{count,x,y}} }`. Your eyes: EXACT coordinates, orientations, and machine STATUS (`working`, `no_power`, `no_fuel`, `item_ingredient_shortage`, `full_output`, `n/a`). Scan BEFORE placing a line (to find free tiles + the drop tiles) and AFTER to verify it runs.
+- `await ops.getRecipe(name)` → `{ ingredients:[{name,amount}], products:[{name,amount}], enabled }` or `null`. The REAL recipe from the game — call it instead of guessing what an item costs. e.g. `const r = await ops.getRecipe('burner-mining-drill')` then make sure your inventory holds every ingredient before `craftItem`. `enabled:false` = not unlocked yet (research it).
+- `await ops.describeEntity(name)` → `{ type, energySource, needsFuel, size:{w,h}, resourceCategories? }` or `null`. A machine's mechanics: `needsFuel:true` → you must load it with coal; a `'mining-drill'` must sit ON a resource in its `resourceCategories`; `size` is its tile footprint (don't overlap it). e.g. `await ops.describeEntity('electric-mining-drill')` → `energySource:'electric'` tells you it needs power, not fuel.
 - `await ops.walkToEntity(name, searchRadius?)` — walk to the nearest matching entity. Do this BEFORE mining/placing/moving on it. e.g. `await ops.walkToEntity('iron-ore', 100)`.
 - `await ops.mineEntity(name, count?)` — mine `count` of the nearest matching resource/entity (must be within ~5 tiles, so walk first).
 - `await ops.placeEntity(name)` — place one from your inventory with AUTO-SNAP: a mining drill snaps onto the nearest ore patch; a furnace snaps onto the nearest drill's output tile. Good for a simple drill+furnace combo. e.g. `await ops.placeEntity('burner-mining-drill')`.
@@ -38,6 +40,7 @@ A factory = machines that run on their own. Use `ops.scan()` to read coordinates
 ## Rules
 
 - Use EXACT Factorio internal names: `'iron-ore'`, `'stone-furnace'`, `'burner-mining-drill'`, `'iron-gear-wheel'`, `'coal'`, `'stone'`, … — never display names.
+- NEVER guess a recipe or a machine's needs — look it up first with `ops.getRecipe(name)` / `ops.describeEntity(name)`. A wrong-from-memory recipe wastes a whole attempt. A `burner-mining-drill`, for instance, needs FUEL (coal) and must sit ON an ore patch before it reaches `working`.
 - Always `walkToEntity` before mining/placing/transferring on a target.
 - Check `ok` after each op; on failure try a fix (walk closer, widen the radius, craft a missing prerequisite) instead of repeating blindly.
 - A stone furnace makes plates only when it holds BOTH the ore to smelt AND coal for fuel: load ore, load coal, `wait(180)`, then take the plates.

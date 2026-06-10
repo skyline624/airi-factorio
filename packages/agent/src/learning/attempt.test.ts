@@ -23,6 +23,8 @@ function mockOps(): Ops {
     skill: ok,
     placeAt: ok,
     scan: async () => ({ entities: [], resources: {} }),
+    getRecipe: async () => null,
+    describeEntity: async () => null,
   } as Ops
 }
 
