@@ -7,9 +7,16 @@ Judge from EVIDENCE, not intent:
 - "automate X" / "build a … that runs" → the relevant producers must exist in the LOCAL MAP **and report a healthy status** — at least one drill/furnace/assembler/engine reading `working` (NOT `no_power` / `no_fuel` / `item_ingredient_shortage` / `not_plugged_in_electric_network`). A machine that exists but reads a bad status is NOT automated; the critique should name the exact status to fix.
 If the evidence is absent, partial, or ambiguous, the objective is NOT met.
 
+Reading a bad status — do NOT mistake "missing an input" for "misplaced" (this is the #1 critique error). A machine that isn't `working` is almost always CORRECTLY placed but starved; tell the agent to supply the input, NOT to move or rebuild it:
+- `no_fuel` → critique "load coal into the <machine>", NOT "reposition" it. A burner-drill and its furnace both need coal, and the furnace stays `no_fuel`/idle until the DRILL is fueled and mining — so if both read `no_fuel`, the fix is fuel (the drill first), never rebuild.
+- `no_power` → "connect it to electricity (poles / a steam setup)".
+- `no_ingredients` / `item_ingredient_shortage` → "load its input items".
+- `full_output` → "remove items from its output".
+- Only a DRILL reading `no_minable_resources` / `n/a` is truly misplaced → "re-place the drill ON an ore patch".
+
 When NOT met, your `critique` MUST be a single concrete, actionable next step, for example:
 - "Only 12/50 iron plates. Load more iron-ore + coal into the furnace and wait ~180 ticks, then collect."
-- "No stone-furnace was built. Craft one (5 stone), then place it on the drill's output tile."
+- "Drill and furnace are placed but read no_fuel. Mine coal and load it into the drill, then the furnace — do NOT move them."
 
 Respond with a SINGLE JSON object, no surrounding text and no code fences:
 

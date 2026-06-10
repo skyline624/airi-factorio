@@ -1,6 +1,9 @@
 import type { GameState, ScanResult } from './types'
+import { createLogg } from '@guiiai/logg'
 import actionPrompt from '../llm/prompt-action-code.md?raw'
 import { complete } from './llm'
+
+const logger = createLogg('action').useGlobalConfig()
 
 export interface RetrievedSkill {
   name: string
@@ -133,5 +136,19 @@ function buildUserMessage(input: GenerateCodeInput): string {
 export async function generateCode(input: GenerateCodeInput): Promise<GeneratedCode> {
   const call = input.complete ?? complete
   const raw = (await call({ system: actionPrompt, user: buildUserMessage(input), model: input.model })) ?? ''
-  return { code: extractCodeBlock(raw), raw }
+  const code = extractCodeBlock(raw)
+  // Visibility for debugging the agent's behaviour: log the generated program and
+  // whether it follows the mandated workflow (looks recipes up, verifies status).
+  // RCON commands are silent now, so this is our only window into what it does.
+  if (code) {
+    logger.withFields({
+      looksUpRecipe: /ops\.getRecipe\b/.test(code),
+      describesEntity: /ops\.describeEntity\b/.test(code),
+      verifiesScan: /ops\.scan\b/.test(code),
+      chars: code.length,
+    }).log('Generated skill code')
+    // Full source at debug level (set the logger to debug to inspect what the model wrote).
+    logger.debug(`GENERATED CODE:\n${code}`)
+  }
+  return { code, raw }
 }

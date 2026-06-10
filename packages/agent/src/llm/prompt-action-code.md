@@ -8,6 +8,23 @@ Reply with three sections:
 **Plan:** the concrete steps your function will take.
 **Code:** a single ```js fenced block. It MUST define, as the LAST top-level declaration, an entry function `async function <name>(state, ops)`. Put any helper functions ABOVE it. Nothing outside the function runs.
 
+## MANDATORY workflow — follow these steps IN ORDER for every objective
+
+Most failures come from skipping a step. Do NOT skip them.
+
+1. **Look it up FIRST — never from memory.** For every item you will craft, call `await ops.getRecipe(name)` and read its real ingredients. For every machine you will place, call `await ops.describeEntity(name)` (does it need fuel? must it sit on a resource? what is its footprint?). Recipes you "remember" are usually WRONG and waste the whole attempt.
+2. **Secure the inputs before acting.** Check `(await ops.getState()).inventory` actually holds every ingredient/item you need. If something is missing, craft or gather it FIRST (and look up ITS recipe too). Never call `craftItem`/`placeEntity` for something whose inputs you don't yet hold.
+3. **Act with the right placement tool.** `placeEntity` (auto-snap) for the simple drill→furnace combo. `placeAt` for straight aligned lines (belts, inserters, assemblers). Fuel every burner machine with coal — but you can only load coal you actually HOLD, so mine a stock of coal (e.g. 20) and keep some in reserve BEFORE you start fueling.
+4. **VERIFY, then FIX — and read the status correctly (this is the #1 mistake).** After placing/fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply the input, do NOT move or rebuild it:
+   - `no_fuel` → load coal into it (`moveItems` coal, `toEntity:true`). This is NOT a placement problem. **First make sure you actually HOLD coal**: `(await ops.getState()).inventory['coal']` — if it's 0, go mine coal (`walkToEntity('coal',200)` then `mineEntity('coal',20)`) BEFORE loading. `moveItems` silently moves nothing if your inventory has no coal. A burner-drill and the furnace it feeds BOTH need coal; a furnace only reaches `working` once its drill is fueled and mining, so **fuel the drill first**, then re-scan.
+   - `no_power` → it needs electricity (poles/steam), not fuel and not moving.
+   - `no_ingredients` / `item_ingredient_shortage` → load its input items.
+   - `full_output` → take items out of its output.
+   - ONLY a **drill** reading `no_minable_resources` / `n/a` is genuinely misplaced → that one you re-place ON an ore patch. A furnace is NEVER "misplaced" just because it reads `no_fuel`.
+
+   Apply the matching fix and `scan()` again. Do NOT end the function while a machine you built is not `working` — but never "fix" a `no_fuel` machine by moving it.
+5. **Log what you saw.** `ops.log(...)` the counts/statuses you observed so the verifier can confirm real progress.
+
 ## The `ops` API (the ONLY thing you may call)
 
 Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` it and check `ok` — adapt on failure, don't blindly continue.
@@ -36,6 +53,67 @@ A factory = machines that run on their own. Use `ops.scan()` to read coordinates
 - A **burner-mining-drill** outputs onto the tile in front of it (its `direction`); put a belt or furnace there.
 - **Electricity** (assemblers, inserters, labs need it): early chain = `offshore-pump` (on a water tile, facing land) → `boiler` (fuel with coal) → `steam-engine` (adjacent to the boiler) → `small-electric-pole` (links machines into the network). A steam-engine reads `not_plugged_in_electric_network` until a pole connects it, then `working`.
 - After placing, call `ops.scan()` again and confirm each machine's `direction` and `status`; fix `no_fuel` / `no_power` / ingredient shortages.
+
+## Worked example — copy this shape (look up → secure inputs → act → VERIFY → fix)
+
+```js
+async function buildIronSmelter(state, ops) {
+  // 1. LOOK UP — never from memory.
+  const drillRecipe = await ops.getRecipe('burner-mining-drill')
+  ops.log(`drill recipe: ${drillRecipe?.ingredients.map(i => `${i.amount} ${i.name}`).join(', ')}`)
+
+  // 2. SECURE INPUTS — craft the drill + furnace only if their ingredients are in stock.
+  for (const item of ['burner-mining-drill', 'stone-furnace']) {
+    if (((await ops.getState()).inventory[item] || 0) >= 1) continue
+    const r = await ops.getRecipe(item)
+    for (const ing of r.ingredients) {
+      const have = (await ops.getState()).inventory[ing.name] || 0
+      if (have < ing.amount) { ops.log(`need ${ing.amount - have} more ${ing.name} for ${item}`); return }
+    }
+    const c = await ops.craftItem(item, 1)
+    if (!c.ok) { ops.log(`craft ${item} failed: ${c.error}`); return }
+    await ops.wait(60)
+  }
+
+  // 3. ACT — place the chain. Drill auto-snaps onto ore, furnace auto-snaps onto the drill's output.
+  await ops.walkToEntity('iron-ore', 100)
+  const d = await ops.placeEntity('burner-mining-drill')
+  if (!d.ok) { ops.log(`place drill failed: ${d.error}`); return }
+  const f = await ops.placeEntity('stone-furnace')
+  if (!f.ok) { ops.log(`place furnace failed: ${f.error}`); return }
+  // SECURE COAL before fueling — moveItems moves nothing from an empty hand. Mine a stock, then walk BACK to the chain.
+  if (((await ops.getState()).inventory['coal'] || 0) < 10) {
+    await ops.walkToEntity('coal', 200)
+    await ops.mineEntity('coal', 20)
+    await ops.walkToEntity('burner-mining-drill', 200)
+  }
+  // Fuel the drill FIRST (the furnace only runs once the drill feeds it), then the furnace.
+  await ops.moveItems({ item: 'coal', entity: 'burner-mining-drill', maxCount: 5, toEntity: true })
+  await ops.moveItems({ item: 'coal', entity: 'stone-furnace', maxCount: 5, toEntity: true })
+  await ops.wait(180)
+
+  // 4. VERIFY + FIX — require status 'working'; the usual culprit is no_fuel. Don't return until working (or fixes exhausted).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const scan = await ops.scan(16)
+    const drill = scan.entities.find(e => e.type === 'mining-drill')
+    const furnace = scan.entities.find(e => e.type === 'furnace')
+    ops.log(`status drill=${drill?.status} furnace=${furnace?.status}`) // 5. LOG what you saw
+    if (drill?.status === 'working' && furnace?.status === 'working') { ops.log('chain running'); return }
+    // no_fuel = correctly placed, just starving. Mine more coal if out of it, then load — do NOT move the machine.
+    if (drill?.status === 'no_fuel' || furnace?.status === 'no_fuel') {
+      if (((await ops.getState()).inventory['coal'] || 0) < 2) {
+        await ops.walkToEntity('coal', 200)
+        await ops.mineEntity('coal', 20)
+        await ops.walkToEntity('burner-mining-drill', 200)
+      }
+      if (drill?.status === 'no_fuel') await ops.moveItems({ item: 'coal', entity: 'burner-mining-drill', maxCount: 5, toEntity: true })
+      if (furnace?.status === 'no_fuel') await ops.moveItems({ item: 'coal', entity: 'stone-furnace', maxCount: 5, toEntity: true })
+    }
+    await ops.wait(120)
+  }
+  ops.log('chain not fully working after fixes')
+}
+```
 
 ## Rules
 
