@@ -797,10 +797,29 @@ function state_placing(player: LuaPlayer) {
     else if (entity_prototype.type === 'furnace') {
       // Place a furnace on the nearest mining drill's output tile so it receives ore
       // hands-free (a furnace sitting on a drill's drop position gets the mined ore).
-      const drills = surface.find_entities_filtered({ position: player.position, radius: 15, type: 'mining-drill' })
+      // Search a wide radius: the agent often places the drill, wanders off to
+      // mine/craft, then places the furnace — so the drill it should feed can be
+      // dozens of tiles away. (create_entity ignores build reach, so snapping the
+      // furnace onto a distant drill's output still works.)
+      const drills = surface.find_entities_filtered({ position: player.position, radius: 48, type: 'mining-drill' })
       const nearest_drill = drills.length > 0 ? get_nearest_entity(player, drills) : undefined
       if (nearest_drill) {
-        storage.player_state.parameters_place_entity.position = surface.find_non_colliding_position(place_name, nearest_drill.drop_position, 2, 0.5)
+        // A drill's drop_position is the CENTRE of its output slot: a furnace sitting
+        // there catches the mined ore hands-free. Try that exact tile FIRST — do not
+        // jump straight to find_non_colliding_position, which (to dodge the adjacent
+        // drill) nudges the 2x2 furnace OFF the drop tile, leaving it next to the
+        // output instead of on it (so it never receives ore). Only search outward if
+        // the drop tile is genuinely blocked.
+        const drop = nearest_drill.drop_position
+        const can_place_on_drop = surface.can_place_entity({
+          name: place_name,
+          position: drop,
+          force: player.force,
+          build_check_type: defines.build_check_type.manual,
+        })
+        storage.player_state.parameters_place_entity.position = can_place_on_drop
+          ? drop
+          : surface.find_non_colliding_position(place_name, drop, 2, 0.5)
       }
       if (!storage.player_state.parameters_place_entity.position) {
         // No drill nearby (or its output is blocked): just place next to the player.
@@ -1084,7 +1103,13 @@ function check_can_craft(player: LuaPlayer, item_name: string, count: number) {
   }
 
   if (not_enough_ingredients.length > 0) {
-    log(`[AUTORIO] [ERROR] No enough ingredients to craft ${item_name}: ${serpent.line(not_enough_ingredients)}`)
+    // Hand the agent the REAL recipe + exactly what's short, in plain text. LLMs
+    // routinely misremember recipes; surfacing the authoritative one on failure
+    // means the next attempt can craft/gather the missing inputs instead of
+    // guessing again. (serpent.line dumped a Lua table the model parsed poorly.)
+    const needs = recipe.ingredients.map(i => `${i.amount * count} ${i.name}`).join(' + ')
+    const missing = not_enough_ingredients.map(i => `${i.amount} ${i.name}`).join(', ')
+    log(`[AUTORIO] [ERROR] Cannot craft ${count} ${item_name}: needs ${needs}; missing ${missing}. Get the missing item(s) first.`)
     return false
   }
 
