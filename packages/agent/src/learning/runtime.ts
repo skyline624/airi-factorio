@@ -169,6 +169,11 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ usedIn?: string[] }>(await deps.raw(`/c remote.call('autorio_tools','used_in',${luaArg(item)})`))
       return (d && Array.isArray(d.usedIn)) ? d.usedIn : []
     },
+    productionStats: async (): Promise<{ produced: Record<string, number>, consumed: Record<string, number> } | null> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ produced?: Record<string, number>, consumed?: Record<string, number> }>(await deps.raw(`/c remote.call('autorio_tools','production_stats')`))
+      return (d && typeof d === 'object' && d.produced) ? { produced: d.produced, consumed: d.consumed ?? {} } : null
+    },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
     placeEntity: entityName => runOp('place_entity', [entityName]),

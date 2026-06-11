@@ -154,6 +154,8 @@ export interface Ops {
   techFor: (item: string) => Promise<TechInfo | null>
   /** RESEARCH what an item is FOR: the recipes that consume it. Empty if it's an end-product / unused. */
   usedIn: (item: string) => Promise<string[]>
+  /** The force's cumulative production/consumption counters — what was MADE (not just held). Use it to verify real output: compare before/after a chain runs. NOTE: hand-mining/crafting counts too. */
+  productionStats: () => Promise<{ produced: Record<string, number>, consumed: Record<string, number> } | null>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
   placeEntity: (entityName: string) => Promise<OpResult>

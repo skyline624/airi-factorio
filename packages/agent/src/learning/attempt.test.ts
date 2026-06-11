@@ -32,6 +32,7 @@ function mockOps(): Ops {
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],
+    productionStats: async () => null,
   } as Ops
 }
 

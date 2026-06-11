@@ -14,6 +14,8 @@ export interface AttemptDeps {
   resetTasks?: () => Promise<void>
   /** Optional spatial scan → a local map shown to the action LLM (before) and the critic (after). */
   captureScan?: () => Promise<ScanResult>
+  /** Optional force-wide production counters → the critic sees what was actually MADE during the objective (not just what the player holds). */
+  captureProduction?: () => Promise<Record<string, number> | null>
   generateCode: (input: GenerateCodeInput) => Promise<GeneratedCode>
   verify: (options: VerifyOptions) => Promise<Verdict>
   actionModel: string
@@ -34,6 +36,25 @@ export interface AttemptResult {
 }
 
 /**
+ * "iron-plate +32, iron-gear-wheel +5" — what the force PRODUCED between the two
+ * counter snapshots. Undefined when production capture is unavailable; '(nothing
+ * produced)' when counters did not move (a strong signal for the critic).
+ */
+export function summarizeProductionDelta(before: Record<string, number> | null, after: Record<string, number> | null): string | undefined {
+  if (!before || !after) {
+    return undefined
+  }
+  const parts: string[] = []
+  for (const [item, count] of Object.entries(after)) {
+    const delta = count - (before[item] ?? 0)
+    if (delta > 0) {
+      parts.push(`${item} +${delta}`)
+    }
+  }
+  return parts.length ? parts.join(', ') : '(nothing produced)'
+}
+
+/**
  * Voyager-style iterative prompting for ONE objective: generate code → run it in
  * the sandbox → verify via the critic → on failure, re-prompt with the previous
  * code + execution error + critique. Returns once verified or the retry budget
@@ -48,6 +69,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     deps.log?.('WARNING: captured state is empty (no position, no inventory). Is player 1 the agent and spawned? The critic will fail every attempt against a blank state.')
   }
   let current = before
+  // Production counters at objective start — the critic judges what was MADE since.
+  const prodBefore = deps.captureProduction ? await deps.captureProduction() : null
 
   let prevCode: string | null = null
   let lastError: string | null = null
@@ -93,7 +116,9 @@ export async function attemptObjective(objective: string, context: string, deps:
 
     const after = await deps.captureState()
     const scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
-    const verdict = await deps.verify({ objective, before, after, logs, scanSummary, model: deps.criticModel })
+    const prodAfter = deps.captureProduction ? await deps.captureProduction() : null
+    const productionSummary = summarizeProductionDelta(prodBefore, prodAfter)
+    const verdict = await deps.verify({ objective, before, after, logs, scanSummary, productionSummary, model: deps.criticModel })
     lastVerdict = verdict
 
     if (verdict.success) {

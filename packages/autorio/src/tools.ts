@@ -763,5 +763,25 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ ok: true, drill: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, mining: resource_name }))
       return true
     },
+    // RESEARCH: the force's cumulative item production/consumption counters. This is
+    // ground truth the inventory can't give: inventory counts what the player HOLDS,
+    // these count what was MADE — so the critic can verify "produce N plates" even if
+    // they were consumed, and (with machine statuses) judge whether a chain actually
+    // produced. NOTE: hand-mining/crafting also counts here; pair with scan_factory.
+    production_stats: () => {
+      const player = get_player()
+      const surface = player !== undefined ? player.surface : game.surfaces[1]
+      const stats = game.forces.player.get_item_production_statistics(surface)
+      const produced: Record<string, number> = {}
+      for (const [item, count] of Object.entries(stats.input_counts)) {
+        produced[item] = count
+      }
+      const consumed: Record<string, number> = {}
+      for (const [item, count] of Object.entries(stats.output_counts)) {
+        consumed[item] = count
+      }
+      rcon.print(helpers.table_to_json({ produced, consumed }))
+      return true
+    },
   })
 }

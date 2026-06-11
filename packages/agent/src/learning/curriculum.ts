@@ -7,6 +7,10 @@ import { complete } from './llm'
 export interface CurriculumInput {
   ultimateGoal: string
   state: GameState
+  /** Force-wide machine census (name/status/`mining`) — lets the curriculum SEE whether anything is automated yet. */
+  factorySummary?: string
+  /** Cumulative force production totals ("iron-plate: 62, …"). */
+  productionSummary?: string
   skills: { name: string, description: string }[]
   completed: string[]
   failed: string[]
@@ -27,6 +31,11 @@ function buildMessage(input: CurriculumInput): string {
     '',
     'CURRENT STATE:',
     summarizeState(input.state),
+    '',
+    'FACTORY (every machine the force has built + status; a drill line shows what it `mining`s — this is your automation ground truth):',
+    input.factorySummary ?? '(no factory data)',
+    '',
+    `PRODUCTION TOTALS (cumulative, hand + machines): ${input.productionSummary ?? '(nothing produced yet)'}`,
   ]
   if (input.skills.length) {
     lines.push('', 'KNOWN SKILLS (compose / build on these when sensible):')

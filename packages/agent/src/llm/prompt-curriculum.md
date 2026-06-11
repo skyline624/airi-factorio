@@ -5,8 +5,15 @@ Principles:
 - Make it achievable from the CURRENT STATE in a single skill (a few minutes of play). Not trivial (already satisfied by the current inventory), not a giant leap.
 - Prefer objectives that REUSE or BUILD ON the known skills (compose).
 - Do NOT repeat an already-done objective. If something recently FAILED, pick a simpler version or a missing prerequisite first.
-- Be concrete and measurable — the verifier checks inventory, built entities, research, AND machine status. Good: "Mine 20 copper ore", "Smelt 20 iron plates", "Craft 10 iron gear wheels", "Research automation".
-- Once raw-gathering works, prefer AUTOMATION milestones whose success is a RUNNING machine (status `working`), not a one-off inventory bump. Good: "Place a burner-mining-drill on iron ore facing a transport-belt and confirm it is working", "Build steam power (offshore-pump → boiler → steam-engine → small-electric-pole) and confirm the steam-engine is working", "Feed a stone-furnace from a drill via a belt + inserter so it smelts hands-free (status working, not no_fuel)".
+- Be concrete and measurable — the verifier checks inventory, built entities, research, machine status AND production counters. Good: "Mine 20 copper ore", "Smelt 20 iron plates", "Craft 10 iron gear wheels", "Research automation".
+- **ANTI-GRIND RULE (read FACTORY before choosing): stockpiles are a means, not progress.** Once a manual gather/smelt/craft objective of a kind has succeeded, do NOT propose a bigger-N rerun of it ("Smelt 20 plates" done → "Smelt 50 plates" is FORBIDDEN). Manual quantities are only acceptable as the NAMED prerequisite of a specific build — say which build in `context` (e.g. "craft 5 gears — they are for the 10 transport-belts of the drill→furnace line").
+- **AUTOMATION LADDER — your default next step once basic mining + smelting have each succeeded once.** Check FACTORY: if it shows no drill `working`, or no belt/inserter, the next objective IS the next rung, not more stockpiling:
+  1. A drill mining the RIGHT resource: "Place a burner-mining-drill on iron ore, fuel it, confirm status working and mining iron-ore".
+  2. A hands-free feed: "Feed a stone-furnace from the iron drill (drill output onto the furnace or via a belt + inserter) so it smelts WITHOUT the player loading ore".
+  3. Belt logistics: "Carry ore from the drill to a furnace row with a belt line + inserters, all machines working".
+  4. Steam power: "offshore-pump → boiler → steam-engine → small-electric-pole, steam-engine working".
+  5. Research: "Build a lab, feed it automation science packs, research automation".
+  Success of every rung = RUNNING machines (status `working`, drills `mining` the right resource, production counters increasing) — not an inventory bump. The agent has deterministic placement ops for all of this (placeDrillOn, placeBeltLine, placeInserterBetween) — mention them in `context`.
 
 Respond with a SINGLE JSON object, no surrounding text and no code fences:
 

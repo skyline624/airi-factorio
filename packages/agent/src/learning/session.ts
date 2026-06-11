@@ -1,7 +1,8 @@
 import type { GameState, ScanResult } from './types'
 import { useLogg } from '@guiiai/logg'
-import { generateCode } from './action'
+import { generateCode, summarizeScan } from './action'
 import { attemptObjective } from './attempt'
+import { extractLastJsonLine } from './json'
 import { verify } from './critic'
 import { proposeNextObjective } from './curriculum'
 import { createOps, extractEntryName, runSkill } from './runtime'
@@ -63,6 +64,12 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   // machines + status (NOT a player-centred scan, which misses the build whenever
   // the agent wandered off — e.g. to mine coal — before the run ended).
   const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_factory\')'))
+  // Force-wide production counters: what was MADE (hand or machine). The critic gets
+  // the per-objective delta; the curriculum gets the totals (is anything automated yet?).
+  const captureProduction = async (): Promise<Record<string, number> | null> => {
+    const d = extractLastJsonLine<{ produced?: Record<string, number> }>(await deps.raw('/c remote.call(\'autorio_tools\', \'production_stats\')'))
+    return (d && typeof d === 'object' && d.produced) ? d.produced : null
+  }
 
   const library = createSkillLibrary({
     dir: deps.skillsDir,
@@ -107,6 +114,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       makeOps,
       captureState,
       captureScan,
+      captureProduction,
       resetTasks,
       generateCode,
       verify,
@@ -148,9 +156,19 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
         }
         else {
           const state = await captureState()
+          // Show the curriculum the FACTORY (machines + status + what each drill mines)
+          // and the production totals — without these it can't tell that nothing is
+          // automated yet, and keeps proposing manual-grind stockpile objectives.
+          const factorySummary = summarizeScan(await captureScan())
+          const production = await captureProduction()
+          const productionSummary = production
+            ? Object.entries(production).filter(([, c]) => c > 0).map(([item, c]) => `${item}: ${c}`).join(', ') || undefined
+            : undefined
           const proposed = await proposeNextObjective({
             ultimateGoal: deps.ultimateGoal,
             state,
+            factorySummary,
+            productionSummary,
             skills: library.summary(),
             completed,
             failed,
