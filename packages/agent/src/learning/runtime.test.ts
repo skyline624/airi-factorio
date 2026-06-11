@@ -148,6 +148,7 @@ function makeMockOps(): Ops {
     placeInserterBetween: ok,
     placeBeltLine: ok,
     placeDrillOn: ok,
+    placeFurnaceAtDrill: ok,
     scan: async () => ({ entities: [], resources: {} }),
     getRecipe: async () => null,
     describeEntity: async () => null,

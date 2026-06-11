@@ -167,6 +167,8 @@ export interface Ops {
   placeBeltLine: (startX: number, startY: number, endX: number, endY: number, beltName?: string) => Promise<OpResult>
   /** Place a mining drill on the nearest patch of a SPECIFIC resource and confirm it mines it. Use THIS for drills, not `placeEntity` — placeEntity auto-snaps to the nearest resource of ANY type, so a drill meant for iron can land on a closer stone/copper patch. `drillName` defaults to 'burner-mining-drill'. Walk near the resource first. e.g. `placeDrillOn('iron-ore')`. Returns `{ok:false, error}` if it can't seat the drill ON that resource. */
   placeDrillOn: (resource: string, drillName?: string) => Promise<OpResult>
+  /** Put a furnace ON the nearest drill's output tile so it's fed hands-free (automation rung 2). Use THIS to fix a drill reading `waiting_for_space_in_destination` — don't compute the drop tile yourself. Idempotent (a furnace already there = ok) and it clears your own misplaced furnaces blocking the spot. `furnaceName` defaults to 'stone-furnace'. Then fuel both machines with coal. e.g. `placeFurnaceAtDrill()`. */
+  placeFurnaceAtDrill: (furnaceName?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>

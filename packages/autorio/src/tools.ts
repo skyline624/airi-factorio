@@ -1,4 +1,4 @@
-import type { MapPosition } from 'factorio:runtime'
+import type { BoundingBox, MapPosition } from 'factorio:runtime'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
@@ -769,6 +769,132 @@ export function create_tools_remote_interface() {
       inv.remove({ name: use_name, count: 1 })
       log(`[AUTORIO] Placed ${use_name} mining ${resource_name} at (${pos.x},${pos.y})`)
       rcon.print(helpers.table_to_json({ ok: true, drill: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, mining: resource_name }))
+      return true
+    },
+    // PLACEMENT PRIMITIVE: put a furnace ON a drill's output tile so the drill feeds it
+    // hands-free (automation rung 2). The exact 2x2-furnace-over-the-drop-tile geometry is
+    // where the LLM fails — it hardcodes coords that miss or collide, leaving misplaced
+    // furnaces that then block the correct spot. This enumerates the covering centres,
+    // is IDEMPOTENT (a furnace already covering the drop = success), and RECLAIMS the
+    // agent's own misplaced furnaces / dropped items blocking the spot instead of failing.
+    place_furnace_at_drill: (furnace_name: string = 'stone-furnace') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      let use_name = furnace_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('stone-furnace') > 0) {
+          use_name = 'stone-furnace'
+        }
+        else if (inv.get_item_count('steel-furnace') > 0) {
+          use_name = 'steel-furnace'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${furnace_name} (or any furnace) in inventory` }))
+          return false
+        }
+      }
+
+      const drills = surface.find_entities_filtered({ position: player.position, radius: 48, type: 'mining-drill' })
+      if (drills.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drill = get_nearest_entity(player, drills)
+      if (drill === undefined || drill === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drop = drill.drop_position
+      const dc = drill.position
+      // The drill feeds whatever occupies the drop TILE (not the exact drop point). Test
+      // coverage at the tile CENTRE — a furnace's collision box is inset, so the exact
+      // drop point can sit just outside it even when the furnace correctly covers the tile.
+      const dtx = math.floor(drop.x) + 0.5
+      const dty = math.floor(drop.y) + 0.5
+
+      function covers(box: BoundingBox, px: number, py: number): boolean {
+        return px >= box.left_top.x && px <= box.right_bottom.x && py >= box.left_top.y && py <= box.right_bottom.y
+      }
+
+      // Idempotent: a furnace already covering the drop tile means the feed is set.
+      for (const f of surface.find_entities_filtered({ position: drop, radius: 1.5, type: 'furnace' })) {
+        if (covers(f.bounding_box, dtx, dty)) {
+          rcon.print(helpers.table_to_json({ ok: true, furnace: f.name, x: math.floor(f.position.x * 10) / 10, y: math.floor(f.position.y * 10) / 10, note: 'already on the drill output' }))
+          return true
+        }
+      }
+
+      // Candidate 2x2 furnace centres whose footprint covers the drop tile.
+      const candidates: Array<{ x: number, y: number }> = []
+      for (const cx of [math.floor(drop.x), math.ceil(drop.x)]) {
+        for (const cy of [math.floor(drop.y), math.ceil(drop.y)]) {
+          if (math.abs(drop.x - cx) >= 1 || math.abs(drop.y - cy) >= 1) {
+            continue
+          }
+          candidates.push({ x: cx, y: cy })
+        }
+      }
+
+      function best_placeable(): { x: number, y: number } | undefined {
+        let chosen: { x: number, y: number } | undefined
+        let best_dist = -1
+        for (const c of candidates) {
+          if (!surface.can_place_entity({ name: use_name, position: c, force: player!.force, build_check_type: defines.build_check_type.manual })) {
+            continue
+          }
+          // Furthest covering centre from the drill so the furnace extends away from it.
+          const dist = (c.x - dc.x) ** 2 + (c.y - dc.y) ** 2
+          if (dist > best_dist) {
+            best_dist = dist
+            chosen = c
+          }
+        }
+        return chosen
+      }
+
+      let chosen = best_placeable()
+      let reclaimed = 0
+
+      // Blocked: reclaim the agent's own MISplaced furnaces (none covers the drop, checked
+      // above) + dropped items near the spot, then retry. mine() returns their contents too.
+      if (chosen === undefined) {
+        for (const f of surface.find_entities_filtered({ position: drop, radius: 2.5, type: 'furnace' })) {
+          if (!f.mine({ inventory: inv, force: true, raise_destroyed: true })) {
+            f.destroy()
+          }
+          reclaimed += 1
+        }
+        for (const g of surface.find_entities_filtered({ position: drop, radius: 2, name: 'item-on-ground' })) {
+          g.destroy()
+        }
+        chosen = best_placeable()
+      }
+
+      if (chosen === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'could not seat a furnace on the drill output tile (still blocked after clearing)' }))
+        return false
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: chosen, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+      if (!covers(ent.bounding_box, dtx, dty)) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: 'placed furnace did not cover the drill output' }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} on the output of drill at (${dc.x},${dc.y}); reclaimed ${reclaimed} misplaced furnace(s)`)
+      rcon.print(helpers.table_to_json({ ok: true, furnace: use_name, x: math.floor(ent.position.x * 10) / 10, y: math.floor(ent.position.y * 10) / 10, reclaimed }))
       return true
     },
     // RESEARCH: the force's cumulative item production/consumption counters. This is
