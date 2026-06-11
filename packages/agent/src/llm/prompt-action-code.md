@@ -25,7 +25,8 @@ Most failures come from skipping a step. Do NOT skip them.
 4. **VERIFY, then FIX — and read the status correctly (this is the #1 mistake).** After placing/fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply the input, do NOT move or rebuild it:
    - `no_fuel` → load coal into it (`moveItems` coal, `toEntity:true`). This is NOT a placement problem. **First make sure you actually HOLD coal**: `(await ops.getState()).inventory['coal']` — if it's 0, go mine coal (`walkToEntity('coal',200)` then `mineEntity('coal',20)`) BEFORE loading. `moveItems` silently moves nothing if your inventory has no coal. A burner-drill and the furnace it feeds BOTH need coal; a furnace only reaches `working` once its drill is fueled and mining, so **fuel the drill first**, then re-scan.
    - `no_power` → it needs electricity (poles/steam), not fuel and not moving.
-   - `no_ingredients` / `item_ingredient_shortage` → load its input items.
+   - `no_ingredients` / `item_ingredient_shortage` / `waiting_for_source_items` → load its input items.
+   - `waiting_for_space_in_destination` on a **drill** → it is mining FINE but has nowhere to output the ore. Place a `stone-furnace` (auto-snaps onto the drill's output) or a belt/chest at its drop tile. This is the NEXT step toward automation — do NOT pick up or relocate the drill (a common, wasteful mistake).
    - `full_output` → take items out of its output.
    - ONLY a **drill** reading `no_minable_resources` / `n/a` is genuinely misplaced → that one you re-place ON an ore patch. A furnace is NEVER "misplaced" just because it reads `no_fuel`.
 

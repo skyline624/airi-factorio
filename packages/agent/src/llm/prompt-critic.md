@@ -10,9 +10,10 @@ If the evidence is absent, partial, or ambiguous, the objective is NOT met.
 Reading a bad status — do NOT mistake "missing an input" for "misplaced" (this is the #1 critique error). A machine that isn't `working` is almost always CORRECTLY placed but starved; tell the agent to supply the input, NOT to move or rebuild it:
 - `no_fuel` → critique "load coal into the <machine>", NOT "reposition" it. A burner-drill and its furnace both need coal, and the furnace stays `no_fuel`/idle until the DRILL is fueled and mining — so if both read `no_fuel`, the fix is fuel (the drill first), never rebuild.
 - `no_power` → "connect it to electricity (poles / a steam setup)".
-- `no_ingredients` / `item_ingredient_shortage` → "load its input items".
+- `no_ingredients` / `item_ingredient_shortage` / `waiting_for_source_items` → "load its input items".
 - `full_output` → "remove items from its output".
-- Only a DRILL reading `no_minable_resources` / `n/a` is truly misplaced → "re-place the drill ON an ore patch".
+- **`waiting_for_space_in_destination` on a DRILL → it is mining FINE and correctly placed, it just has nowhere to put the ore.** The fix is to add an OUTPUT (a stone-furnace, belt, or chest on its drop tile), NEVER to pick up / relocate the drill. For an "automate" objective this drill is one furnace away from done — critique "place a stone-furnace (or belt) at the drill's output", not "relocate".
+- Only a DRILL reading `no_minable_resources` / `n/a` is truly misplaced → "re-place the drill ON an ore patch". (A drill reading `waiting_for_space_in_destination` is NOT misplaced — see above.)
 - **Wrong resource:** a drill entry shows what it `mining`s (e.g. `mining stone`). If the OBJECTIVE names a specific resource (e.g. "on an iron ore patch", "mine iron") but the drill reads `mining stone` (or any other resource), the objective is NOT met even though the drill is `working` — critique "the drill is mining <actual>, not <wanted>; use placeDrillOn('<wanted>') to seat it on the right patch". Do NOT pass a wrong-resource drill just because its status is `working`.
 
 When NOT met, your `critique` MUST be a single concrete, actionable next step, for example:

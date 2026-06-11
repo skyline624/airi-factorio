@@ -51,6 +51,14 @@ function status_name(status: number | undefined): string {
       return 'fluid_ingredient_shortage'
     case defines.entity_status.full_output:
       return 'full_output'
+    // A drill that MINES fine but has nowhere to put the ore (no furnace/belt/chest at
+    // its output). It is correctly placed — the fix is to add an output, NOT relocate it.
+    // Was previously mapped to 'other', which made the critic order pointless relocations.
+    case defines.entity_status.waiting_for_space_in_destination:
+      return 'waiting_for_space_in_destination'
+    // A machine waiting for its INPUT items (e.g. a furnace/assembler with no ore yet).
+    case defines.entity_status.waiting_for_source_items:
+      return 'waiting_for_source_items'
     case defines.entity_status.not_plugged_in_electric_network:
       return 'not_plugged_in_electric_network'
     case defines.entity_status.no_minable_resources:
