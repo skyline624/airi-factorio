@@ -159,6 +159,8 @@ export interface Ops {
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
   /** Place a correctly-ORIENTED inserter between two machines so items flow `from` -> `to` (the mod computes the tile + facing; don't compute it yourself). `inserterName` defaults to 'burner-inserter' (works with NO power). e.g. take plates from a furnace onto a belt: `placeInserterBetween('stone-furnace','transport-belt')`. */
   placeInserterBetween: (fromName: string, toName: string, inserterName?: string) => Promise<OpResult>
+  /** Lay a straight L-shaped line of ALIGNED belts from one tile to another (the mod snaps to tile centres + orients each belt toward the flow — don't compute coords/facing yourself). Reuses belts already on the path. Returns `{ok, data:{placed, reused, blocked:[{x,y}]}}`; `ok` is false if any tile was blocked — mine the obstacle (or pick a clear start/end) and call again. e.g. carry ore from a drill at (10,4) to a furnace row at (10,12): `placeBeltLine(10,4,10,12)`. */
+  placeBeltLine: (startX: number, startY: number, endX: number, endY: number, beltName?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>

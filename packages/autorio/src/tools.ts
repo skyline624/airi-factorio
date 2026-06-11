@@ -556,5 +556,115 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ ok: true, inserter: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, direction: best_dir }))
       return true
     },
+    // PLACEMENT PRIMITIVE: lay a straight L-shaped line of aligned belts from (start)
+    // to (end), each belt oriented toward the flow. Belts MUST sit on exact tile centres
+    // to connect, so — unlike the inserter — we cannot nudge them off a blocked tile.
+    // Instead we place every free tile, RE-ORIENT any belt already there (no wasted item),
+    // and report the blocked tiles so the LLM can mine the obstacle or reroute. The path
+    // is a simple L: horizontal leg first, then vertical.
+    place_belt_line: (start_x: number, start_y: number, end_x: number, end_y: number, belt_name: string = 'transport-belt') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      let use_name = belt_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('transport-belt') > 0) {
+          use_name = 'transport-belt'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${belt_name} (or transport-belt) in inventory` }))
+          return false
+        }
+      }
+
+      function snap(v: number): number {
+        return math.floor(v) + 0.5
+      }
+      const sx = snap(start_x)
+      const sy = snap(start_y)
+      const ex = snap(end_x)
+      const ey = snap(end_y)
+
+      // Ordered tile path: walk the horizontal leg, then the vertical leg (L-shape).
+      const path: Array<{ x: number, y: number }> = [{ x: sx, y: sy }]
+      let cx = sx
+      let cy = sy
+      while (cx !== ex) {
+        cx += cx < ex ? 1 : -1
+        path.push({ x: cx, y: cy })
+      }
+      while (cy !== ey) {
+        cy += cy < ey ? 1 : -1
+        path.push({ x: cx, y: cy })
+      }
+
+      function dir_to(ax: number, ay: number, bx: number, by: number): defines.direction {
+        if (bx > ax) {
+          return defines.direction.east
+        }
+        if (bx < ax) {
+          return defines.direction.west
+        }
+        if (by > ay) {
+          return defines.direction.south
+        }
+        return defines.direction.north
+      }
+
+      let placed = 0
+      let reused = 0
+      const blocked: Array<{ x: number, y: number }> = []
+
+      for (let i = 0; i < path.length; i++) {
+        const tile = path[i]
+        // Each belt points toward the NEXT tile; the last tile keeps the previous heading.
+        const dir = i < path.length - 1
+          ? dir_to(tile.x, tile.y, path[i + 1].x, path[i + 1].y)
+          : (path.length > 1 ? dir_to(path[i - 1].x, path[i - 1].y, tile.x, tile.y) : defines.direction.east)
+
+        // A belt already on this tile → just re-orient it (don't fail, don't waste an item).
+        const existing = surface.find_entities_filtered({ position: tile, radius: 0.1, type: 'transport-belt' })
+        if (existing.length > 0) {
+          existing[0].direction = dir
+          reused += 1
+          continue
+        }
+
+        if (inv.get_item_count(use_name) === 0) {
+          blocked.push(tile) // out of belts — the rest of the line is unfulfilled
+          continue
+        }
+
+        const can = surface.can_place_entity({
+          name: use_name,
+          position: tile,
+          direction: dir,
+          force: player.force,
+          build_check_type: defines.build_check_type.manual,
+        })
+        if (!can) {
+          blocked.push(tile)
+          continue
+        }
+
+        const ent = surface.create_entity({ name: use_name, position: tile, direction: dir, force: player.force, raise_built: true, player })
+        if (ent === undefined) {
+          blocked.push(tile)
+          continue
+        }
+        inv.remove({ name: use_name, count: 1 })
+        placed += 1
+      }
+
+      const ok = blocked.length === 0 && placed + reused > 0
+      log(`[AUTORIO] place_belt_line ${use_name}: placed=${placed} reused=${reused} blocked=${blocked.length}`)
+      rcon.print(helpers.table_to_json({ ok, belt: use_name, placed, reused, blocked }))
+      return ok
+    },
   })
 }

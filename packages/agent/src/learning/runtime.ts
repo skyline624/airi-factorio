@@ -178,6 +178,22 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_inserter_between',${luaArg(fromName)},${luaArg(toName)},${luaArg(inserterName)})`))
       return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'place_inserter_between failed' }
     },
+    placeBeltLine: async (startX: number, startY: number, endX: number, endY: number, beltName = 'transport-belt'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, placed?: number, reused?: number, blocked?: Array<{ x: number, y: number }> }>(
+        await deps.raw(`/c remote.call('autorio_tools','place_belt_line',${startX},${startY},${endX},${endY},${luaArg(beltName)})`),
+      )
+      if (!d || typeof d !== 'object') {
+        return { ok: false, error: 'place_belt_line failed' }
+      }
+      const blocked = Array.isArray(d.blocked) ? d.blocked : []
+      const data = { placed: d.placed ?? 0, reused: d.reused ?? 0, blocked }
+      if (d.ok === true) {
+        return { ok: true, data }
+      }
+      const where = blocked.length > 0 ? ` (blocked at ${blocked.map(t => `(${t.x},${t.y})`).join(', ')})` : ''
+      return { ok: false, error: (d.error ?? `belt line incomplete: placed ${data.placed}, ${blocked.length} tile(s) blocked`) + where, data }
+    },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),
