@@ -17,7 +17,8 @@
     "start": "dotenvx run -f .env -f .env.local --overload -- vite-node src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:rcon": "vite-node rcon-harness.ts"
   },
   "dependencies": {
     "@dotenvx/dotenvx": "^1.51.0",
