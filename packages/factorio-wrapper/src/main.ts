@@ -53,6 +53,13 @@ async function main() {
     args.push('--config', factorioConfig.configPath)
   }
 
+  // Optional server-settings.json (e.g. `auto_pause:false`) so the dedicated server keeps
+  // ticking at full speed even with no client connected. This lets the headless RCON test
+  // harness — and a briefly-disconnected human during a run — work without the world freezing.
+  if (factorioConfig.serverSettingsPath) {
+    args.push('--server-settings', factorioConfig.serverSettingsPath)
+  }
+
   if (arch() === 'arm64') {
     args.unshift(factorioConfig.path)
     factorioInst = execa('/bin/box64', args, {
