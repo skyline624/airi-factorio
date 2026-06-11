@@ -54,11 +54,12 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` it and ch
 
 ## Building automated lines (this is how you make a factory — not by hand)
 
-A factory = machines that run on their own. Use `ops.scan()` to read coordinates + directions, then `ops.placeAt(name, {x, y, direction})` to lay aligned lines. Orientation facts (the #1 source of mistakes):
-- A **transport-belt**'s `direction` is the way items MOVE along it.
-- An **inserter** grabs from the tile BEHIND it and drops onto the tile in its `direction`. To load a furnace from a belt, put the inserter between them facing the furnace.
-- A **burner-mining-drill** outputs onto the tile in front of it (its `direction`); put a belt or furnace there.
-- **Electricity** (assemblers, inserters, labs need it): early chain = `offshore-pump` (on a water tile, facing land) → `boiler` (fuel with coal) → `steam-engine` (adjacent to the boiler) → `small-electric-pole` (links machines into the network). A steam-engine reads `not_plugged_in_electric_network` until a pole connects it, then `working`.
+A factory = machines that run on their own. **FIRST `await ops.craftPlan(goal)`** to know exactly what the chain needs (don't recall it from memory). Then build:
+- **Moving items BETWEEN machines = inserters (the "arms").** Don't compute their tile/facing yourself (that's where you fail) — use **`await ops.placeInserterBetween(fromName, toName)`**, which places a correctly-oriented inserter so items flow `from`→`to`. e.g. take plates out of a furnace onto a belt: `await ops.placeInserterBetween('stone-furnace','transport-belt')`. **Inserters need POWER; before you have electricity use `'burner-inserter'` (the default — runs on coal). Fuel it with coal like any burner.**
+- For aligned belt/machine lines, read free tiles + directions from `ops.scan()` then `ops.placeAt(name, {x, y, direction})`. Orientation facts (the #1 source of mistakes):
+  - A **transport-belt**'s `direction` is the way items MOVE along it.
+  - A **burner-mining-drill** outputs onto the tile in front of it (its `direction`); a belt or furnace there receives it.
+  - **Electricity** (electric inserters, assemblers, labs need it): early chain = `offshore-pump` (find water with `findNearest('water')`, place facing land) → `boiler` (fuel with coal) → `steam-engine` (adjacent to the boiler) → `small-electric-pole` (links machines in). A steam-engine reads `not_plugged_in_electric_network` until a pole connects it, then `working`.
 - After placing, call `ops.scan()` again and confirm each machine's `direction` and `status`; fix `no_fuel` / `no_power` / ingredient shortages.
 
 ## Worked example — copy this shape (look up → secure inputs → act → VERIFY → fix)

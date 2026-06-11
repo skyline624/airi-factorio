@@ -173,6 +173,11 @@ export function createOps(deps: OpsDeps): Ops {
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
     placeEntity: entityName => runOp('place_entity', [entityName]),
     placeAt: (entityName, at) => runOp('place_entity_at', [entityName, at.x, at.y, at.direction ?? 'north']),
+    placeInserterBetween: async (fromName: string, toName: string, inserterName = 'burner-inserter'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_inserter_between',${luaArg(fromName)},${luaArg(toName)},${luaArg(inserterName)})`))
+      return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'place_inserter_between failed' }
+    },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),

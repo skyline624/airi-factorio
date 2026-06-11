@@ -22,6 +22,7 @@ function mockOps(): Ops {
     attackNearestEnemy: ok,
     skill: ok,
     placeAt: ok,
+    placeInserterBetween: ok,
     scan: async () => ({ entities: [], resources: {} }),
     getRecipe: async () => null,
     describeEntity: async () => null,

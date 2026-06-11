@@ -445,5 +445,116 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ item, usedIn: products }))
       return true
     },
+    // PLACEMENT PRIMITIVE: drop a correctly-oriented inserter between two machines so
+    // the LLM doesn't have to compute tile coords + facing (its weak spot — it kept
+    // placing belts on blocked tiles and forgot the "arms"). Deterministic: place near
+    // the midpoint, then try all 4 facings and keep the one whose REAL pickup/drop
+    // position (read from the game) best lands pickup on `from` and drop on `to`.
+    // inserter_name defaults to burner-inserter (works with NO power, unlike 'inserter').
+    place_inserter_between: (from_name: string, to_name: string, inserter_name: string = 'burner-inserter') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+
+      let use_name = inserter_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('burner-inserter') > 0) {
+          use_name = 'burner-inserter'
+        }
+        else if (inv.get_item_count('inserter') > 0) {
+          use_name = 'inserter'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${inserter_name} (or any inserter) in inventory` }))
+          return false
+        }
+      }
+
+      function nearest_of(name: string) {
+        const filter = prototypes.entity[name] !== undefined
+          ? { name, position: pp, radius: 32 }
+          : { type: name, position: pp, radius: 32 }
+        const candidates = surface.find_entities_filtered(filter)
+        if (candidates.length === 0) {
+          return undefined
+        }
+        let best = candidates[0]
+        let bd = (best.position.x - pp.x) ** 2 + (best.position.y - pp.y) ** 2
+        for (const e of candidates) {
+          const d = (e.position.x - pp.x) ** 2 + (e.position.y - pp.y) ** 2
+          if (d < bd) {
+            bd = d
+            best = e
+          }
+        }
+        return best
+      }
+
+      const from = nearest_of(from_name)
+      const to = nearest_of(to_name)
+      if (from === undefined || to === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'from/to entity not found within 32 tiles' }))
+        return false
+      }
+
+      // An inserter only reaches 1 tile, so it must sit ADJACENT to `from` (not at the
+      // midpoint). Anchor it just outside `from` on the cardinal side toward `to`.
+      const ddx = to.position.x - from.position.x
+      const ddy = to.position.y - from.position.y
+      const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
+      const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
+      const anchor = { x: from.position.x + ux * 1.5, y: from.position.y + uy * 1.5 }
+      const pos = surface.find_non_colliding_position(use_name, anchor, 2, 0.5)
+      if (pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no free tile next to from to place an inserter' }))
+        return false
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: pos, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+
+      // Orient using the game's OWN pickup/drop geometry: pickup on `from`, drop toward `to`.
+      const fb = from.bounding_box
+      function inside_from(px: number, py: number): boolean {
+        return px >= fb.left_top.x && px <= fb.right_bottom.x && py >= fb.left_top.y && py <= fb.right_bottom.y
+      }
+      const dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
+      let best_dir = ent.direction
+      let best_score = -1e18
+      for (const d of dirs) {
+        ent.direction = d
+        const pick = ent.pickup_position
+        const drop = ent.drop_position
+        // strongly reward pickup landing INSIDE `from`; then reward drop being near `to`.
+        const d_drop = (drop.x - to.position.x) ** 2 + (drop.y - to.position.y) ** 2
+        const score = (inside_from(pick.x, pick.y) ? 1000 : 0) - d_drop
+        if (score > best_score) {
+          best_score = score
+          best_dir = d
+        }
+      }
+      ent.direction = best_dir
+
+      // VERIFY the connection actually works; if not, don't leave a dead inserter (or
+      // consume the item) — destroy it and report cleanly so the agent can adapt.
+      if (!inside_from(ent.pickup_position.x, ent.pickup_position.y)) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: `could not orient an inserter to pick from ${from_name} (is ${to_name} adjacent on a free side?)` }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} taking from ${from_name} toward ${to_name} at (${pos.x},${pos.y})`)
+      rcon.print(helpers.table_to_json({ ok: true, inserter: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, direction: best_dir }))
+      return true
+    },
   })
 }

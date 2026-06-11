@@ -157,6 +157,8 @@ export interface Ops {
   placeEntity: (entityName: string) => Promise<OpResult>
   /** Place ONE entity at EXACT tile coords with orientation (no snapping) — for aligned lines. */
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
+  /** Place a correctly-ORIENTED inserter between two machines so items flow `from` -> `to` (the mod computes the tile + facing; don't compute it yourself). `inserterName` defaults to 'burner-inserter' (works with NO power). e.g. take plates from a furnace onto a belt: `placeInserterBetween('stone-furnace','transport-belt')`. */
+  placeInserterBetween: (fromName: string, toName: string, inserterName?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>
