@@ -13,6 +13,7 @@ Reading a bad status — do NOT mistake "missing an input" for "misplaced" (this
 - `no_ingredients` / `item_ingredient_shortage` → "load its input items".
 - `full_output` → "remove items from its output".
 - Only a DRILL reading `no_minable_resources` / `n/a` is truly misplaced → "re-place the drill ON an ore patch".
+- **Wrong resource:** a drill entry shows what it `mining`s (e.g. `mining stone`). If the OBJECTIVE names a specific resource (e.g. "on an iron ore patch", "mine iron") but the drill reads `mining stone` (or any other resource), the objective is NOT met even though the drill is `working` — critique "the drill is mining <actual>, not <wanted>; use placeDrillOn('<wanted>') to seat it on the right patch". Do NOT pass a wrong-resource drill just because its status is `working`.
 
 When NOT met, your `critique` MUST be a single concrete, actionable next step, for example:
 - "Only 12/50 iron plates. Load more iron-ore + coal into the furnace and wait ~180 ticks, then collect."

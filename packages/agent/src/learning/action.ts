@@ -56,7 +56,8 @@ export function summarizeScan(scan: ScanResult): string {
   const lines: string[] = [`(origin ${o ? `(${Math.round(o.x)}, ${Math.round(o.y)})` : '?'}, radius ${scan.radius ?? '?'})`]
   if (scan.entities.length) {
     for (const e of scan.entities.slice(0, 40)) {
-      lines.push(`  - ${e.name} @(${e.x}, ${e.y}) facing ${e.direction} [${e.status}]`)
+      const mining = e.mining ? ` mining ${e.mining}` : ''
+      lines.push(`  - ${e.name} @(${e.x}, ${e.y}) facing ${e.direction} [${e.status}]${mining}`)
     }
     if (scan.entities.length > 40) {
       lines.push(`  - … +${scan.entities.length - 40} more entities`)

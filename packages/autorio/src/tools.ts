@@ -215,21 +215,28 @@ export function create_tools_remote_interface() {
       }
       const surface = player.surface
       const producer_types = ['mining-drill', 'furnace', 'assembling-machine', 'lab', 'boiler', 'generator', 'pumpjack', 'chemical-plant', 'oil-refinery', 'rocket-silo']
-      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string }[] = []
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string }[] = []
       let n = 0
       for (const e of surface.find_entities_filtered({ force: player.force, type: producer_types })) {
         if (n >= 100) {
           break
         }
         n += 1
-        entities.push({
+        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string } = {
           name: e.name,
           type: e.type,
           x: math.floor(e.position.x * 10) / 10,
           y: math.floor(e.position.y * 10) / 10,
           direction: name_from_direction(e.direction),
           status: status_name(e.status),
-        })
+        }
+        // For drills, report the resource actually being mined so the critic can catch
+        // a drill seated on the WRONG resource (e.g. stone when the objective wanted iron).
+        if (e.type === 'mining-drill') {
+          const mt = e.mining_target
+          rec.mining = mt !== undefined ? mt.name : 'nothing'
+        }
+        entities.push(rec)
       }
       rcon.print(helpers.table_to_json({ tick: game.tick, origin: player.position, radius: -1, entities, resources: {} }))
       return true
@@ -665,6 +672,96 @@ export function create_tools_remote_interface() {
       log(`[AUTORIO] place_belt_line ${use_name}: placed=${placed} reused=${reused} blocked=${blocked.length}`)
       rcon.print(helpers.table_to_json({ ok, belt: use_name, placed, reused, blocked }))
       return ok
+    },
+    // PLACEMENT PRIMITIVE: place a mining drill on the nearest patch of a SPECIFIC resource.
+    // placeEntity's auto-snap grabs the nearest resource of ANY type, so a drill meant for
+    // iron lands on a closer stone patch and the furnace behind it ends up making bricks.
+    // This snaps onto the resource the agent NAMED and VERIFIES the drill actually mines it
+    // (mining_target resolves immediately, unlike drop_target which needs fuel) — else it
+    // destroys the drill and fails cleanly instead of leaving a wrong-resource drill.
+    place_drill_on: (resource_name: string, drill_name: string = 'burner-mining-drill') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      // Guard against an unknown resource name (find_entities_filtered{name=...} throws on one).
+      if (prototypes.entity[resource_name] === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `unknown resource '${resource_name}'` }))
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+
+      let use_name = drill_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('burner-mining-drill') > 0) {
+          use_name = 'burner-mining-drill'
+        }
+        else if (inv.get_item_count('electric-mining-drill') > 0) {
+          use_name = 'electric-mining-drill'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${drill_name} (or any mining drill) in inventory` }))
+          return false
+        }
+      }
+
+      const resources = surface.find_entities_filtered({ name: resource_name, position: pp, radius: 200 })
+      if (resources.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${resource_name} within 200 tiles (walk closer first)` }))
+        return false
+      }
+      let ore = resources[0]
+      let bd = (ore.position.x - pp.x) ** 2 + (ore.position.y - pp.y) ** 2
+      for (const r of resources) {
+        const d = (r.position.x - pp.x) ** 2 + (r.position.y - pp.y) ** 2
+        if (d < bd) {
+          bd = d
+          ore = r
+        }
+      }
+
+      // Snap onto the patch: search outward FROM the ore tile so the drill covers it.
+      const pos = surface.find_non_colliding_position(use_name, ore.position, 6, 0.5)
+      if (pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no free tile on the ${resource_name} patch to seat a ${use_name}` }))
+        return false
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: pos, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+
+      // VERIFY the drill physically covers the intended resource. mining_target is NOT
+      // populated synchronously at create_entity (it needs a tick, exactly like drop_target),
+      // so we can't read it here — instead check the resources under the drill's footprint.
+      // If the named resource isn't there, the snap landed on the wrong patch: destroy + fail.
+      const bb = ent.bounding_box
+      const area = {
+        left_top: { x: bb.left_top.x - 0.4, y: bb.left_top.y - 0.4 },
+        right_bottom: { x: bb.right_bottom.x + 0.4, y: bb.right_bottom.y + 0.4 },
+      }
+      let on_target = false
+      for (const r of surface.find_entities_filtered({ area, type: 'resource' })) {
+        if (r.name === resource_name) {
+          on_target = true
+          break
+        }
+      }
+      if (!on_target) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: `could not seat the drill ON ${resource_name} (no ${resource_name} under it); walk onto the ${resource_name} patch and retry` }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} mining ${resource_name} at (${pos.x},${pos.y})`)
+      rcon.print(helpers.table_to_json({ ok: true, drill: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, mining: resource_name }))
+      return true
     },
   })
 }

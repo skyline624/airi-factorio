@@ -194,6 +194,11 @@ export function createOps(deps: OpsDeps): Ops {
       const where = blocked.length > 0 ? ` (blocked at ${blocked.map(t => `(${t.x},${t.y})`).join(', ')})` : ''
       return { ok: false, error: (d.error ?? `belt line incomplete: placed ${data.placed}, ${blocked.length} tile(s) blocked`) + where, data }
     },
+    placeDrillOn: async (resource: string, drillName = 'burner-mining-drill'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, mining?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_drill_on',${luaArg(resource)},${luaArg(drillName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { mining: d.mining } } : { ok: false, error: (d && d.error) ? d.error : 'place_drill_on failed' }
+    },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),

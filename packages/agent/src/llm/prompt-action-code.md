@@ -13,11 +13,15 @@ Reply with three sections:
 Most failures come from skipping a step. Do NOT skip them.
 
 1. **Look it up FIRST — never from memory.** You have RESEARCH ops backed by the live game; use them instead of recalling Factorio facts (your memory is often WRONG and wastes the whole attempt):
-   - For a multi-step build, `await ops.craftPlan(item)` gives the ENTIRE chain (what to mine, what to make, in order, what's research-locked) — call it before building anything non-trivial.
+   - **ALWAYS begin a build/craft objective with `await ops.craftPlan(targetItem, count)` — this is NOT optional.** It returns the ENTIRE chain in one call: `raw` (what to MINE), `steps` (intermediates to make, IN ORDER, with `amount` + `category`: smelting/crafting), and `locked` (what's research-blocked). Skipping this is the #1 cause of wasted attempts: you place/craft something whose ingredients you don't hold, fail, and "rediscover" the chain the hard way over several attempts. One call gives it for free. e.g. `craftPlan('transport-belt', 10)` → `raw:{iron-ore:15}`, `steps:[iron-plate×15 (smelting), iron-gear-wheel×5 (crafting), transport-belt×10]`. Make the FIRST thing your function does read this plan, then craft the `steps` bottom-up (smelt the plates, craft the gears, then the belts) before you try to place anything.
    - For a single item, `await ops.getRecipe(name)` (exact ingredients) and, if it might be locked, `await ops.techFor(name)`.
    - For a machine you'll place, `await ops.describeEntity(name)` (fuel? must sit on a resource? footprint?).
 2. **Secure the inputs before acting.** Check `(await ops.getState()).inventory` actually holds every ingredient/item you need. If something is missing, craft or gather it FIRST (and look up ITS recipe too). Never call `craftItem`/`placeEntity` for something whose inputs you don't yet hold.
-3. **Act with the right placement tool.** `placeEntity` (auto-snap) for the simple drill→furnace combo. `placeAt` for straight aligned lines (belts, inserters, assemblers). Fuel every burner machine with coal — but you can only load coal you actually HOLD, so mine a stock of coal (e.g. 20) and keep some in reserve BEFORE you start fueling.
+3. **Act with the right placement tool — do NOT compute belt/inserter geometry by hand (that is exactly where you fail).**
+   - **Belts → `await ops.placeBeltLine(startX, startY, endX, endY)`** lays the whole aligned line in ONE call, each belt faced toward the flow. **NEVER place belts one tile at a time with `placeAt('transport-belt', …)`** — that is the old, failure-prone path and gets the facing wrong. (And you can only place belts you HOLD — `craftPlan` + craft them first.)
+   - **The "arms" between two machines → `await ops.placeInserterBetween(fromName, toName)`** — a correctly-oriented inserter so items flow `from`→`to`. Default `burner-inserter` works with no power; fuel it with coal.
+   - `placeEntity` (auto-snap) for the simple drill→furnace combo. `placeAt` ONLY for a single odd machine at exact coords (an assembler, a lone furnace) — never for belts or inserters.
+   - Fuel every burner machine with coal — but you can only load coal you actually HOLD, so mine a stock of coal (e.g. 20) and keep some in reserve BEFORE you start fueling.
 4. **VERIFY, then FIX — and read the status correctly (this is the #1 mistake).** After placing/fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply the input, do NOT move or rebuild it:
    - `no_fuel` → load coal into it (`moveItems` coal, `toEntity:true`). This is NOT a placement problem. **First make sure you actually HOLD coal**: `(await ops.getState()).inventory['coal']` — if it's 0, go mine coal (`walkToEntity('coal',200)` then `mineEntity('coal',20)`) BEFORE loading. `moveItems` silently moves nothing if your inventory has no coal. A burner-drill and the furnace it feeds BOTH need coal; a furnace only reaches `working` once its drill is fueled and mining, so **fuel the drill first**, then re-scan.
    - `no_power` → it needs electricity (poles/steam), not fuel and not moving.
@@ -42,7 +46,8 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` it and ch
 - `await ops.usedIn(item)` → `string[]`. What an item is FOR (the recipes that consume it). Use it to understand an item's utility. e.g. `await ops.usedIn('copper-cable')` → `['electronic-circuit', …]`.
 - `await ops.walkToEntity(name, searchRadius?)` — walk to the nearest matching entity. Do this BEFORE mining/placing/moving on it. e.g. `await ops.walkToEntity('iron-ore', 100)`.
 - `await ops.mineEntity(name, count?)` — mine `count` of the nearest matching resource/entity (must be within ~5 tiles, so walk first).
-- `await ops.placeEntity(name)` — place one from your inventory with AUTO-SNAP: a mining drill snaps onto the nearest ore patch; a furnace snaps onto the nearest drill's output tile. Good for a simple drill+furnace combo. e.g. `await ops.placeEntity('burner-mining-drill')`.
+- `await ops.placeDrillOn(resource, drillName?)` — **use THIS for mining drills.** Places a drill on the nearest patch of the NAMED resource and confirms it actually mines it. e.g. `await ops.placeDrillOn('iron-ore')`. (Why not `placeEntity` for a drill: that auto-snaps to the nearest resource of ANY type, so an "iron" drill can land on a closer stone/copper patch and the furnace behind it then makes the wrong product.)
+- `await ops.placeEntity(name)` — place one from your inventory with AUTO-SNAP: a furnace snaps onto the nearest drill's output tile (good for the furnace half of a drill+furnace combo). For a drill use `placeDrillOn(resource)` instead, not this. e.g. `await ops.placeEntity('stone-furnace')`.
 - `await ops.placeAt(name, {x, y, direction})` — place ONE entity at EXACT integer tile coords facing `'north'|'east'|'south'|'west'` (no snapping, no adjacency required). Read free coords from `ops.scan()` and lay a STRAIGHT, ALIGNED line. Returns `{ok:false, error}` if the tile is blocked — pick another. This is the tool for multi-machine automated lines.
 - `await ops.placeBeltLine(startX, startY, endX, endY)` — lay a whole ALIGNED belt line from one tile to another in one call (the mod snaps to tile centres + faces each belt toward the flow — don't compute coords/facing yourself). Returns `{ok, data:{placed, reused, blocked:[{x,y}]}}`; if `ok:false` a tile on the path was blocked (`data.blocked` lists them) — `mineEntity` the obstacle there, or pick a clear start/end, then call again. This is the tool for belts; only drop to `placeAt` for a single odd tile.
 - `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity (within ~8 tiles). `toEntity: true` inserts INTO it, `false` takes FROM it. e.g. `await ops.moveItems({ item: 'coal', entity: 'stone-furnace', maxCount: 5, toEntity: true })`.
@@ -85,9 +90,9 @@ async function buildIronSmelter(state, ops) {
     await ops.wait(60)
   }
 
-  // 3. ACT — place the chain. Drill auto-snaps onto ore, furnace auto-snaps onto the drill's output.
+  // 3. ACT — place the chain. Drill goes ON the iron patch (NOT placeEntity — that could snap to stone); furnace auto-snaps onto the drill's output.
   await ops.walkToEntity('iron-ore', 100)
-  const d = await ops.placeEntity('burner-mining-drill')
+  const d = await ops.placeDrillOn('iron-ore')
   if (!d.ok) { ops.log(`place drill failed: ${d.error}`); return }
   const f = await ops.placeEntity('stone-furnace')
   if (!f.ok) { ops.log(`place furnace failed: ${f.error}`); return }
@@ -122,6 +127,38 @@ async function buildIronSmelter(state, ops) {
     await ops.wait(120)
   }
   ops.log('chain not fully working after fixes')
+}
+```
+
+## Worked example — automating with belts (craftPlan FIRST → craft bottom-up → placeBeltLine → arms)
+
+```js
+async function automateOreToFurnace(state, ops) {
+  // 1. PLAN FIRST — one call gives the whole chain; never discover it by failing.
+  const plan = await ops.craftPlan('transport-belt', 6)
+  ops.log(`belt plan: raw=${JSON.stringify(plan.raw)} steps=${plan.steps.map(s => `${s.amount} ${s.name}`).join(' -> ')}`)
+
+  // 2. SECURE INPUTS — craft each step bottom-up only if not already in stock.
+  for (const step of plan.steps) {
+    if (((await ops.getState()).inventory[step.name] || 0) >= step.amount) continue
+    const c = await ops.craftItem(step.name, step.amount)
+    if (!c.ok) { ops.log(`craft ${step.name} failed: ${c.error} — gather its inputs first`); return }
+    await ops.wait(60)
+  }
+
+  // 3. ACT — find the two endpoints from the scan, then lay the line + arms (don't compute facings).
+  const scan = await ops.scan(20)
+  const drill = scan.entities.find(e => e.type === 'mining-drill' && e.status === 'working')
+  const furnace = scan.entities.find(e => e.type === 'furnace')
+  if (!drill || !furnace) { ops.log('need a working drill and a furnace in view first'); return }
+  const belt = await ops.placeBeltLine(drill.x, drill.y + 1, furnace.x, furnace.y) // whole aligned line in one call
+  if (!belt.ok) { ops.log(`belt line blocked: ${belt.error}`); return } // data.blocked tells you which tiles to clear
+  await ops.placeInserterBetween('transport-belt', 'stone-furnace') // the arm that loads the furnace off the belt
+
+  // 4. VERIFY — the furnace should leave no_ingredients once ore flows in.
+  await ops.wait(180)
+  const after = (await ops.scan(20)).entities.find(e => e.type === 'furnace')
+  ops.log(`furnace status after wiring: ${after?.status}`)
 }
 ```
 
