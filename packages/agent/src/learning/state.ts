@@ -32,6 +32,16 @@ export function buildCaptureStateCommand(playerName: string): string {
   return `/c ${buildCaptureBody(playerName)}`
 }
 
+/**
+ * Build a `/c` command that probes whether the agent's target player is actually
+ * IN-GAME with a character to control — prints 'READY' or 'WAIT'. A dedicated server
+ * has no character (and barely ticks) until a client connects, so the agent must
+ * gate on this before driving any character op, or every op would time out.
+ */
+export function buildPlayerPresenceCommand(playerName: string): string {
+  return `/c ${buildPlayerResolveSnippet(playerName)} local p=resolve() rcon.print((p~=nil and p.connected==true and p.character~=nil) and 'READY' or 'WAIT')`
+}
+
 /** Build a `/c` command that takes a screenshot from the given player's POV. */
 export function buildScreenshotCommand(shot: string, playerName: string): string {
   return `/c ${buildPlayerResolveSnippet(playerName)} local p=resolve(); if p and p.connected then game.take_screenshot{by_player=p, position=p.position, resolution={384,384}, zoom=0.5, path='${shot}', show_gui=false, show_entity_info=true} end`

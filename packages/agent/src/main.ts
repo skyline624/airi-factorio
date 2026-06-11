@@ -12,7 +12,7 @@ import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
 import { airiConfig, autonomousConfig, debugConfig, factorioConfig, initEnv, learningConfig, openaiConfig, rconClientConfig, wsClientConfig } from './config'
 import { startLearningSession } from './learning/session'
-import { buildScreenshotCommand } from './learning/state'
+import { buildPlayerPresenceCommand, buildScreenshotCommand } from './learning/state'
 import { createMessageHandler } from './llm/message-handler'
 import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
@@ -151,6 +151,35 @@ async function visionDecide(tickContent: string): Promise<LLMMessage | null> {
   }
 }
 
+// Preflight gate: a dedicated server has NO character to control — and barely ticks —
+// until a client connects. Starting the action loop then would time out every motor op
+// (walk/mine/place) and burn LLM tokens against a frozen world. So block until the
+// agent's target player (FACTORIO_PLAYER_NAME, or the first connected player) is in-game.
+async function waitForPlayer(): Promise<void> {
+  const cmd = buildPlayerPresenceCommand(factorioConfig.playerName)
+  const target = factorioConfig.playerName || '(first connected player)'
+  let polls = 0
+  for (;;) {
+    let ready = false
+    try {
+      ready = (await rconCommand(cmd)).includes('READY')
+    }
+    catch {
+      ready = false // RCON not up yet / transient — keep waiting
+    }
+    if (ready) {
+      logger.withFields({ player: target }).log('Player is in-game — starting the agent')
+      return
+    }
+    // Warn immediately, then re-log a heartbeat every ~30s so the wait is visible.
+    if (polls % 10 === 0) {
+      logger.withFields({ player: target }).warn('Waiting for a player to connect (no character to control; server is paused)…')
+    }
+    polls += 1
+    await new Promise(resolve => setTimeout(resolve, 3000))
+  }
+}
+
 async function main() {
   initEnv()
 
@@ -159,6 +188,11 @@ async function main() {
   const ws = connect(`ws://${wsClientConfig.wsHost}:${wsClientConfig.wsPort}`)
 
   const gameLogger = useLogg('game').useGlobalConfig()
+
+  // Don't start any action loop until there's a character in-game to drive.
+  if (learningConfig.enabled || autonomousConfig.enabled) {
+    await waitForPlayer()
+  }
 
   // --- Learning mode (Voyager-inspired): the agent WRITES & runs skill code. ---
   // Takes precedence over autonomous/reactive modes when enabled.
