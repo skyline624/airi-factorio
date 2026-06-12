@@ -32,6 +32,18 @@ export interface PlayerParametersWalkToEntity {
   last_position?: MapPositionStruct
   stuck_ticks?: number
   recompute_count?: number
+  // Staged pathfinding: when request_path returns no route to a far / un-charted target,
+  // we path to an intermediate waypoint CLOSER to the player instead of a dumb direct walk.
+  // final_goal = the real target; staged_goal = the current intermediate; path_stage = the
+  // consecutive path-failure count that shortens the next leg (reset on progress).
+  final_goal?: MapPositionStruct
+  staged_goal?: MapPositionStruct
+  path_stage?: number
+  // Reachability-aware target selection: candidate target positions sorted nearest-first,
+  // and the index currently being tried. On pathfinding failure we advance to the next
+  // candidate so an unreachable nearest patch (e.g. across water) doesn't deadlock the walk.
+  candidates?: MapPositionStruct[]
+  candidate_index?: number
 }
 
 export interface PlayerParametersWalkingDirect {

@@ -1,6 +1,5 @@
 import type { MapPosition, MapPositionStruct } from 'factorio:prototype'
 import type {
-  BoundingBoxArray,
   CollisionMask,
   EquipmentPosition,
   LuaEntity,
@@ -37,6 +36,17 @@ const structure_alert_interval = 120 // ticks between aggregated structure_lost 
 create_tools_remote_interface()
 
 const task_manager = new_task_manager()
+
+// Staged pathfinding: max consecutive failed path requests (each shortening the next leg
+// toward an intermediate waypoint) before we give up and abort the walk task. Declared
+// here (above the on_script_path_request_finished handler) so the Lua local is in scope.
+const MAX_PATH_STAGES = 5
+// Reachability-aware target selection: how many nearest candidate entities (sorted by
+// distance) to try in turn when pathfinding to the closest one fails (e.g. across water).
+const MAX_CANDIDATES = 8
+// Min spacing (tiles) between kept candidates, so the list spans DISTINCT patches instead
+// of many adjacent ore tiles of the same (possibly unreachable) patch.
+const MIN_CANDIDATE_SPACING = 16
 
 script.on_init(() => {
   init_storage()
@@ -377,21 +387,65 @@ script.on_event(defines.events.on_script_path_request_finished, (event: OnScript
     return
   }
 
+  const walk_params = storage.player_state.parameters_walk_to_entity
+
   if (!event.path) {
-    log('[AUTORIO] Path calculation failed, switching to direct walking')
-    storage.player_state.task_state = TaskStates.WALKING_DIRECT
-    storage.player_state.parameters_walking_direct = {
-      type: TaskStates.WALKING_DIRECT,
-      target_position: storage.player_state.parameters_walk_to_entity.target_position,
+    // The pathfinder was merely BUSY, not "no path": re-issue the SAME request next tick
+    // instead of treating the goal as unreachable. Spamming requests (staged + candidates)
+    // saturates the pathfinder, so this is the real cause of "unreachable" on clear terrain.
+    if (event.try_again_later) {
+      log('[AUTORIO] Path request: try_again_later (pathfinder busy), re-requesting same goal')
+      walk_params.calculating_path = false
+      walk_params.path = null
+      return
     }
-    storage.player_state.parameters_walk_to_entity = undefined
+
+    const player = game.connected_players[0]
+    const stage = (walk_params.path_stage ?? 0) + 1
+    const goal = walk_params.final_goal ?? walk_params.target_position
+
+    // 1) Staged pathfinding toward the CURRENT candidate: aim at a closer intermediate
+    //    so a shorter leg can path (helps when the target is far / in an un-charted chunk
+    //    — walking there charts terrain). Subdivide more on each failure, up to MAX_PATH_STAGES.
+    if (player && goal && stage <= MAX_PATH_STAGES) {
+      const start = player.position
+      const frac = 1 / (stage + 1)
+      const intermediate = {
+        x: start.x + (goal.x - start.x) * frac,
+        y: start.y + (goal.y - start.y) * frac,
+      }
+      walk_params.path_stage = stage
+      walk_params.staged_goal = intermediate
+      walk_params.calculating_path = false
+      walk_params.path = null
+      log(`[AUTORIO] Path failed; staged retry ${stage}/${MAX_PATH_STAGES} to intermediate ${serpent.line(intermediate)}`)
+      return
+    }
+
+    // 2) Current candidate is unreachable even staged → try the NEXT-nearest candidate
+    //    (reachability-aware selection: e.g. skip an iron patch that sits across water).
+    const candidates = walk_params.candidates
+    const next_index = (walk_params.candidate_index ?? 0) + 1
+    if (candidates && next_index < candidates.length) {
+      walk_params.candidate_index = next_index
+      walk_params.path_stage = 0
+      walk_params.staged_goal = undefined
+      walk_params.calculating_path = false
+      walk_params.path = null
+      log(`[AUTORIO] Target unreachable; trying next-nearest candidate ${next_index + 1}/${candidates.length}`)
+      return
+    }
+
+    log('[AUTORIO] [ERROR] No reachable target after trying all candidates, aborting walk')
+    task_manager.cancel_all_tasks()
     return
   }
 
-  storage.player_state.parameters_walk_to_entity.path = event.path
-  storage.player_state.parameters_walk_to_entity.path_drawn = false
-  storage.player_state.parameters_walk_to_entity.path_index = 1
-  storage.player_state.parameters_walk_to_entity.calculating_path = false
+  walk_params.path = event.path
+  walk_params.path_drawn = false
+  walk_params.path_index = 1
+  walk_params.calculating_path = false
+  walk_params.path_stage = 0
   log(`[AUTORIO] Path calculation completed. Path length: ${event.path}`)
 })
 
@@ -601,6 +655,21 @@ function state_walking_to_entity(player: LuaPlayer) {
     }
     else {
       if (follow_path(player, params.path)) {
+        // Reached only a staged intermediate waypoint: don't finish the task — clear the
+        // leg and re-path toward the real target (now closer / freshly charted).
+        if (params.staged_goal) {
+          log('[AUTORIO] Reached staged waypoint, continuing toward the target')
+          params.staged_goal = undefined
+          params.path = null
+          params.path_drawn = false
+          params.last_position = undefined
+          params.stuck_ticks = 0
+          params.recompute_count = 0
+          params.path_stage = 0
+          player.walking_state = { walking: false, direction: player.walking_state.direction }
+          rendering.clear()
+          return
+        }
         log('[AUTORIO] Task completed, switching to IDLE state')
         // Stop the character. Without this, Factorio keeps applying the last walking_state
         // (walking: true) so the player runs past the target — and the next op (place/mine)
@@ -615,50 +684,81 @@ function state_walking_to_entity(player: LuaPlayer) {
     }
   }
 
-  // find nearest entity and calculate path. The agent passes an arbitrary string;
-  // find_entities_filtered{name=...} THROWS and crashes on_tick if it isn't a real
-  // entity NAME (e.g. 'tree', which is a TYPE — trees are named tree-01, …). Resolve
-  // it: a real prototype name -> name filter; otherwise treat it as a type ('tree',
-  // 'resource', …); if it's neither, fail cleanly instead of crashing the whole mod.
-  const target_name = storage.player_state.parameters_walk_to_entity.entity_name
-  const search_radius = storage.player_state.parameters_walk_to_entity.search_radius
-  let entities: LuaEntity[]
-  try {
-    entities = prototypes.entity[target_name] !== undefined
-      ? player.surface.find_entities_filtered({ position: player.position, radius: search_radius, name: target_name })
-      : player.surface.find_entities_filtered({ position: player.position, radius: search_radius, type: target_name })
+  // Build the candidate list ONCE per walk task: matching entities sorted nearest-first.
+  // On pathfinding failure we advance through them (reachability-aware selection) so an
+  // unreachable nearest patch (e.g. across water) doesn't deadlock the walk.
+  // The agent passes an arbitrary string; find_entities_filtered{name=...} THROWS if it
+  // isn't a real entity NAME (e.g. 'tree', a TYPE — trees are tree-01, …). Resolve
+  // name -> type -> fail cleanly instead of crashing on_tick.
+  if (!params.candidates) {
+    const target_name = params.entity_name
+    const search_radius = params.search_radius
+    let entities: LuaEntity[]
+    try {
+      entities = prototypes.entity[target_name] !== undefined
+        ? player.surface.find_entities_filtered({ position: player.position, radius: search_radius, name: target_name })
+        : player.surface.find_entities_filtered({ position: player.position, radius: search_radius, type: target_name })
+    }
+    catch {
+      log(`[AUTORIO] [ERROR] '${target_name}' is not a valid entity name or type, aborting walk`)
+      task_manager.cancel_all_tasks()
+      return
+    }
+
+    if (entities.length === 0) {
+      log(`[AUTORIO] [ERROR] No ${target_name} found in ${search_radius}m radius, reverting to IDLE state`)
+      task_manager.cancel_all_tasks()
+      return
+    }
+
+    const sorted = entities.sort((a, b) => distance(player.position, a.position) - distance(player.position, b.position))
+    // Greedily keep only spaced-apart candidates so the list spans DISTINCT patches
+    // (otherwise the 8 nearest entities are 8 adjacent tiles of the same patch — if that
+    // one is across water, advancing through them never reaches a reachable patch).
+    const picked: MapPositionStruct[] = []
+    for (const e of sorted) {
+      if (picked.length >= MAX_CANDIDATES) {
+        break
+      }
+      const p = { x: e.position.x, y: e.position.y }
+      let distinct = true
+      for (const q of picked) {
+        if (distance(p, q) < MIN_CANDIDATE_SPACING) {
+          distinct = false
+          break
+        }
+      }
+      if (distinct) {
+        picked.push(p)
+      }
+    }
+    params.candidates = picked
+    params.candidate_index = 0
+    log(`[AUTORIO] Walk: ${picked.length} distinct ${target_name} patch(es) within reach, nearest-first`)
   }
-  catch {
-    log(`[AUTORIO] [ERROR] '${target_name}' is not a valid entity name or type, aborting walk`)
+
+  const candidate = params.candidates[params.candidate_index ?? 0]
+  if (!candidate) {
+    log('[AUTORIO] [ERROR] No reachable target candidates left, aborting walk')
     task_manager.cancel_all_tasks()
     return
   }
 
-  if (entities.length === 0) {
-    log(`[AUTORIO] [ERROR] No ${storage.player_state.parameters_walk_to_entity.entity_name} found in ${storage.player_state.parameters_walk_to_entity.search_radius}m radius, reverting to IDLE state`)
-    task_manager.cancel_all_tasks()
-    return
-  }
-
-  const nearest_entity = get_nearest_entity(player, entities)
-
-  log(`[AUTORIO] Nearest entity position: ${serpent.line(nearest_entity?.position)}`)
-  log(`[AUTORIO] Player position: ${serpent.line(player.position)}`)
-  log(`[AUTORIO] Player bounding box: ${serpent.line(player.character?.bounding_box)}`)
-
-  if (nearest_entity && !storage.player_state.parameters_walk_to_entity.calculating_path && !storage.player_state.parameters_walk_to_entity.path) {
+  if (!params.calculating_path && !params.path) {
     const character = player.character
     if (!character) {
       log('[AUTORIO] Player character not found, aborting pathfinding')
       return
     }
 
-    // TODO: improve path following, check if stuck on objects
-    // currently using larger than character bbox as a workaround for the path following getting stuck on objects
-    // may sometimes still get stuck on trees and will fail to find small passages
-    const bbox: BoundingBoxArray = [[-0.5, -0.5], [0.5, 0.5]]
+    // Use the character's ACTUAL collision box. An inflated 1x1 box (half-width 0.5 vs the
+    // character's ~0.2) makes request_path return NO path even on perfectly clear terrain —
+    // proven by live A/B capture: every big-box variant failed, the character-sized box
+    // returned a 45-waypoint path. The old inflated box was a stuck-following workaround that
+    // silently broke pathfinding entirely.
+    const bbox = character.prototype.collision_box
     const start = player.surface.find_non_colliding_position(
-      'iron-chest', // TODO: using iron chest bbox so request_path doesn't fail standing near objects using the larger bbox
+      'character',
       character.position,
       10,
       0.5,
@@ -670,24 +770,23 @@ function state_walking_to_entity(player: LuaPlayer) {
       return
     }
 
-    const collision_mask: CollisionMask = {
-      layers: {
-        player: true,
-        train: true,
-        water_tile: true,
-        object: true,
-        // car: true,
-        // cliff: true,
-      },
-      consider_tile_transitions: true,
-    }
+    // The character's real mask is { is_object, player, train }: it routes AROUND trees/rocks
+    // (which collide on is_object, not the old `object` layer) so the path is genuinely
+    // walkable, and water still blocks via the player layer.
+    const collision_mask: CollisionMask = character.prototype.collision_mask
+
+    // Path to the staged intermediate waypoint if one is set (after a previous failure),
+    // otherwise straight to the entity. final_goal stays the real target so staging can
+    // recompute legs toward it.
+    const final_goal = candidate
+    const goal = storage.player_state.parameters_walk_to_entity.staged_goal ?? final_goal
 
     player.surface.request_path({
       bounding_box: bbox,
       collision_mask,
       radius: 2,
       start,
-      goal: nearest_entity.position,
+      goal,
       force: player.force,
       entity_to_ignore: character,
       pathfind_flags: {
@@ -698,8 +797,9 @@ function state_walking_to_entity(player: LuaPlayer) {
       },
     })
     storage.player_state.parameters_walk_to_entity.calculating_path = true
-    storage.player_state.parameters_walk_to_entity.target_position = nearest_entity.position
-    log(`[AUTORIO] Requested path calculation to ${serpent.line(nearest_entity.position)}`)
+    storage.player_state.parameters_walk_to_entity.final_goal = final_goal
+    storage.player_state.parameters_walk_to_entity.target_position = goal
+    log(`[AUTORIO] Requested path calculation to ${serpent.line(goal)}`)
   }
 }
 
