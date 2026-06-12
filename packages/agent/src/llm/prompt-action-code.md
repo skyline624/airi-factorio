@@ -8,6 +8,14 @@ Reply with three sections:
 **Plan:** the concrete steps your function will take.
 **Code:** a single ```js fenced block. It MUST define, as the LAST top-level declaration, an entry function `async function <name>(state, ops)`. Put any helper functions ABOVE it. Nothing outside the function runs.
 
+## HARD RULES (breaking one wastes the whole attempt — the critic WILL reject it)
+
+1. A **mining-drill** is placed ONLY with `await ops.placeDrillOn(resource)` (e.g. `placeDrillOn('iron-ore')`). **NEVER** use `placeEntity` or `placeAt` for a drill — auto-snap seats it on the nearest resource of ANY type, so an "iron" drill lands on stone/copper and the chain makes the wrong product. This is the #1 cause of failed runs.
+2. A **furnace that feeds a drill** is placed ONLY with `await ops.placeFurnaceAtDrill()`. NEVER `placeEntity` for it.
+3. **Begin every build/craft objective with `await ops.craftPlan(target, count)`** and craft the `steps` bottom-up BEFORE placing anything.
+4. A machine reading `no_fuel` / `no_ingredients` is correctly placed and just starving → **load its input, never move or rebuild it**. ONLY a drill reading `n/a` / `no_minable_resources` is misplaced.
+5. Always `await ops.walkToEntity(name, radius)` before mining/placing/transferring on a target, and check `ok` after every op.
+
 ## MANDATORY workflow — follow these steps IN ORDER for every objective
 
 Most failures come from skipping a step. Do NOT skip them.
