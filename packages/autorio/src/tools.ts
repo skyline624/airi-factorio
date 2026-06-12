@@ -845,7 +845,12 @@ export function create_tools_remote_interface() {
         let chosen: { x: number, y: number } | undefined
         let best_dist = -1
         for (const c of candidates) {
-          if (!surface.can_place_entity({ name: use_name, position: c, force: player!.force, build_check_type: defines.build_check_type.manual })) {
+          // Use `script`, not `manual`: the agent's own character almost always stands on the
+          // drill's output tile (it just placed the drill from there), and `manual` counts the
+          // character's collision so EVERY covering centre reads unplaceable. `script` ignores
+          // the character (we shove it clear before create_entity below) while still rejecting
+          // real obstacles (the drill, water, other buildings).
+          if (!surface.can_place_entity({ name: use_name, position: c, force: player!.force, build_check_type: defines.build_check_type.script })) {
             continue
           }
           // Furthest covering centre from the drill so the furnace extends away from it.
@@ -879,6 +884,17 @@ export function create_tools_remote_interface() {
       if (chosen === undefined) {
         rcon.print(helpers.table_to_json({ ok: false, error: 'could not seat a furnace on the drill output tile (still blocked after clearing)' }))
         return false
+      }
+
+      // The character usually stands on the drill output (where the furnace must go). We
+      // validated the spot with `script` (character ignored); now move the character clear so
+      // create_entity doesn't trap it inside the new furnace, leaving it unable to walk.
+      const cp = player.position
+      if (player.character !== undefined && (cp.x - drop.x) ** 2 + (cp.y - drop.y) ** 2 < 6.25) {
+        const safe = surface.find_non_colliding_position('character', { x: dc.x, y: dc.y + 3 }, 12, 0.5)
+        if (safe !== undefined) {
+          player.teleport(safe)
+        }
       }
 
       const ent = surface.create_entity({ name: use_name, position: chosen, force: player.force, raise_built: true, player })
