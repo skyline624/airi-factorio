@@ -164,18 +164,27 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           const productionSummary = production
             ? Object.entries(production).filter(([, c]) => c > 0).map(([item, c]) => `${item}: ${c}`).join(', ') || undefined
             : undefined
-          const proposed = await proposeNextObjective({
-            ultimateGoal: deps.ultimateGoal,
-            state,
-            factorySummary,
-            productionSummary,
-            skills: library.summary(),
-            completed,
-            failed,
-            model: deps.actionModel,
-          })
+          // A single LLM timeout/stall returns null here — it must NOT kill the whole run.
+          // Retry the proposal a few times (the cloud relay usually recovers on the next call)
+          // before giving up, so one transient hiccup doesn't end an otherwise healthy session.
+          let proposed: Awaited<ReturnType<typeof proposeNextObjective>> = null
+          for (let r = 1; r <= 3 && !proposed && running; r++) {
+            proposed = await proposeNextObjective({
+              ultimateGoal: deps.ultimateGoal,
+              state,
+              factorySummary,
+              productionSummary,
+              skills: library.summary(),
+              completed,
+              failed,
+              model: deps.actionModel,
+            })
+            if (!proposed) {
+              logger.withFields({ try: r }).warn('Curriculum produced no objective (likely an LLM timeout); retrying')
+            }
+          }
           if (!proposed) {
-            logger.warn('Curriculum produced no objective; stopping.')
+            logger.warn('Curriculum produced no objective after 3 tries; stopping.')
             break
           }
           objective = proposed.objective
