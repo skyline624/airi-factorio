@@ -1,5 +1,5 @@
 import type { SettleBus } from './settle-bus'
-import type { CraftPlan, EntityInfo, GameState, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, TechInfo } from './types'
+import type { CraftPlan, EntityInfo, GameState, MapView, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, TechInfo } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
 import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
@@ -33,7 +33,7 @@ export function luaArg(value: unknown): string {
 // Operations that enqueue a task and therefore emit a settle signal when done.
 // `research_technology` does NOT enqueue a task (it would never settle), and
 // `craft_item` only settles when it returns success (it can reject synchronously).
-const SETTLING_OPS = new Set(['walk_to_entity', 'mine_entity', 'place_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
+const SETTLING_OPS = new Set(['walk_to_entity', 'mine_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
 
 export interface OpsDeps {
   /** Send a full `/c ...` console command and resolve with the rcon output. */
@@ -174,40 +174,23 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ produced?: Record<string, number>, consumed?: Record<string, number> }>(await deps.raw(`/c remote.call('autorio_tools','production_stats')`))
       return (d && typeof d === 'object' && d.produced) ? { produced: d.produced, consumed: d.consumed ?? {} } : null
     },
+    renderMap: async (radius = 16, center?: { x: number, y: number }): Promise<MapView | null> => {
+      bumpOpCount()
+      const cx = (center !== undefined && typeof center.x === 'number') ? `${Math.floor(center.x)}` : 'nil'
+      const cy = (center !== undefined && typeof center.y === 'number') ? `${Math.floor(center.y)}` : 'nil'
+      const rad = Math.max(1, Math.floor(radius))
+      const d = extractLastJsonLine<MapView>(await deps.raw(`/c remote.call('autorio_tools','render_map',${cx},${cy},${rad})`))
+      return (d && typeof d === 'object' && Array.isArray(d.grid)) ? d : null
+    },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
-    placeEntity: entityName => runOp('place_entity', [entityName]),
-    placeAt: (entityName, at) => runOp('place_entity_at', [entityName, at.x, at.y, at.direction ?? 'north']),
-    placeInserterBetween: async (fromName: string, toName: string, inserterName = 'burner-inserter'): Promise<OpResult> => {
-      bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_inserter_between',${luaArg(fromName)},${luaArg(toName)},${luaArg(inserterName)})`))
-      return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'place_inserter_between failed' }
-    },
-    placeBeltLine: async (startX: number, startY: number, endX: number, endY: number, beltName = 'transport-belt'): Promise<OpResult> => {
-      bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string, placed?: number, reused?: number, blocked?: Array<{ x: number, y: number }> }>(
-        await deps.raw(`/c remote.call('autorio_tools','place_belt_line',${startX},${startY},${endX},${endY},${luaArg(beltName)})`),
-      )
-      if (!d || typeof d !== 'object') {
-        return { ok: false, error: 'place_belt_line failed' }
+    placeAt: (entityName, at) => {
+      // No silent default to (0,0): the model MUST pass explicit coordinates read off
+      // renderMap. A missing/NaN x or y is a mistake, not a spawn-point placement.
+      if (at === undefined || typeof at.x !== 'number' || typeof at.y !== 'number' || Number.isNaN(at.x) || Number.isNaN(at.y)) {
+        return Promise.resolve({ ok: false, error: 'placeAt needs explicit numeric x and y read from renderMap (it will not default to 0,0)' })
       }
-      const blocked = Array.isArray(d.blocked) ? d.blocked : []
-      const data = { placed: d.placed ?? 0, reused: d.reused ?? 0, blocked }
-      if (d.ok === true) {
-        return { ok: true, data }
-      }
-      const where = blocked.length > 0 ? ` (blocked at ${blocked.map(t => `(${t.x},${t.y})`).join(', ')})` : ''
-      return { ok: false, error: (d.error ?? `belt line incomplete: placed ${data.placed}, ${blocked.length} tile(s) blocked`) + where, data }
-    },
-    placeDrillOn: async (resource: string, drillName = 'burner-mining-drill'): Promise<OpResult> => {
-      bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string, mining?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_drill_on',${luaArg(resource)},${luaArg(drillName)})`))
-      return (d && d.ok === true) ? { ok: true, data: { mining: d.mining } } : { ok: false, error: (d && d.error) ? d.error : 'place_drill_on failed' }
-    },
-    placeFurnaceAtDrill: async (furnaceName = 'stone-furnace'): Promise<OpResult> => {
-      bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string, reclaimed?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_furnace_at_drill',${luaArg(furnaceName)})`))
-      return (d && d.ok === true) ? { ok: true, data: { reclaimed: d.reclaimed ?? 0 } } : { ok: false, error: (d && d.error) ? d.error : 'place_furnace_at_drill failed' }
+      return runOp('place_entity_at', [entityName, at.x, at.y, at.direction ?? 'north'])
     },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),

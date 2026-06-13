@@ -71,7 +71,7 @@ describe('createOps', () => {
   it('fails fast on a non-array (Lua error) reply', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => 'some lua error', settleBus: bus })
-    await expect(ops.placeEntity('stone-furnace')).resolves.toEqual({ ok: false, error: 'some lua error' })
+    await expect(ops.placeAt('stone-furnace', { x: 5, y: 5 })).resolves.toEqual({ ok: false, error: 'some lua error' })
   })
 
   it('throws when a skill exceeds the operation cap', async () => {
@@ -137,7 +137,6 @@ function makeMockOps(): Ops {
     getState: async () => ({ tick: 0, inventory: {}, entities: {} }),
     walkToEntity: ok,
     mineEntity: ok,
-    placeEntity: ok,
     moveItems: ok,
     craftItem: ok,
     researchTechnology: ok,
@@ -145,11 +144,8 @@ function makeMockOps(): Ops {
     attackNearestEnemy: ok,
     skill: ok,
     placeAt: ok,
-    placeInserterBetween: ok,
-    placeBeltLine: ok,
-    placeDrillOn: ok,
-    placeFurnaceAtDrill: ok,
     scan: async () => ({ entities: [], resources: {} }),
+    renderMap: async () => null,
     getRecipe: async () => null,
     describeEntity: async () => null,
     findNearest: async () => null,
@@ -165,7 +161,7 @@ describe('runSkill (sandbox)', () => {
 
   it('runs a happy-path skill and collects logs', async () => {
     const ops = makeMockOps()
-    const src = 'async function build(state, ops) { await ops.placeEntity("x"); ops.log("done") }'
+    const src = 'async function build(state, ops) { await ops.placeAt("x", { x: 1, y: 1 }); ops.log("done") }'
     const res = await runSkill(src, ops, state)
     expect(res.ok).toBe(true)
     expect(res.logs).toContain('done')

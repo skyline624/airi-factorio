@@ -1,13 +1,16 @@
 /**
- * Headless RCON integration harness for the autorio placement primitives.
+ * Headless RCON integration harness for the autorio perception remotes.
  *
- * Validates the deterministic geometry remotes against a LIVE Factorio server WITHOUT
- * a connected human: the placement primitives use only player-1's inventory + the
- * surface (no character), so with `auto_pause:false` + a seeded save (player 1 present)
- * the whole suite runs unattended. See plan: splendid-puzzling-eclipse.
+ * Validates the read-only remotes (render_map, scan_factory, status mapping) against a LIVE
+ * Factorio server WITHOUT a connected human: they use only player-1's data + the surface,
+ * so with `auto_pause:false` + a seeded save (player 1 present) the suite runs unattended.
  *
- * Prereqs: a server running the autorio mod on a SEEDED save (a human connected once so
- * game.players[1] exists), launched with --server-settings (auto_pause:false). Run with:
+ * NOTE: placement is now the model's job via `placeAt` reading `render_map` — there are no
+ * deterministic placement macros to test anymore. Entities here are created directly with
+ * create_entity to set up perception scenarios.
+ *
+ * Prereqs: a server running the autorio mod on a SEEDED save, launched with
+ * --server-settings (auto_pause:false). Run with:
  *   pnpm --filter @proj-airi/factorio-agent run test:rcon
  *
  * Exit code 0 = all green, 1 = a failure (so it can gate CI / a pre-commit check).
@@ -31,7 +34,6 @@ async function tool<T = Record<string, unknown>>(name: string, args: string = ''
   return extractLastJsonLine<T>(await lua(call))
 }
 async function sleep(ms: number): Promise<void> {
-  // The server ticks via auto_pause:false; real wall-clock wait lets the chain run.
   await new Promise(resolve => setTimeout(resolve, ms))
 }
 
@@ -41,12 +43,12 @@ const failures: string[] = []
 function check(name: string, ok: boolean, detail = ''): void {
   if (ok) {
     passed++
-    console.log(`  [32m✓[0m ${name}`)
+    console.log(`  [32m✓[0m ${name}`)
   }
   else {
     failed++
     failures.push(`${name}${detail ? ` — ${detail}` : ''}`)
-    console.log(`  [31m✗[0m ${name}${detail ? ` — ${detail}` : ''}`)
+    console.log(`  [31m✗[0m ${name}${detail ? ` — ${detail}` : ''}`)
   }
 }
 
@@ -68,6 +70,20 @@ async function scan(): Promise<Scan> {
   return (await tool<Scan>('scan_factory')) ?? { entities: [] }
 }
 
+/** Create a fuelled burner-mining-drill on the nearest iron-ore to player 1; return its tile. */
+async function createDrillOnIron(): Promise<{ x: number, y: number }> {
+  const out = await lua(
+    `local p=game.get_player(1); local s=p.surface; `
+    + `local es=s.find_entities_filtered{position=p.position,radius=300,type='resource',name='iron-ore'}; `
+    + `local b,bd=nil,1e18; for _,e in pairs(es) do local d=(e.position.x-p.position.x)^2+(e.position.y-p.position.y)^2; if d<bd then bd=d b=e end end; `
+    + `local x,y=math.floor(b.position.x),math.floor(b.position.y); `
+    + `local d=s.create_entity{name='burner-mining-drill',position={x,y},force=p.force,direction=defines.direction.south}; `
+    + `if d then d.insert{name='coal',count=3} end; rcon.print(x..','..y)`,
+  )
+  const [x, y] = out.split(',').map(Number)
+  return { x, y }
+}
+
 // ---- Tests -----------------------------------------------------------------
 
 async function testPlayerHeadless(): Promise<void> {
@@ -77,60 +93,31 @@ async function testPlayerHeadless(): Promise<void> {
   check('running headless (no character needed)', out.includes('char=false') || out.includes('char=true'))
 }
 
-async function testPlaceDrillOn(): Promise<void> {
-  console.log('place_drill_on')
-  await resetSandbox({ 'burner-mining-drill': 1 })
-  const r = await tool<{ ok: boolean, mining?: string, error?: string }>('place_drill_on', `'iron-ore'`)
-  check('places a drill', !!r?.ok, r?.error ?? JSON.stringify(r))
-  check('drill is mining iron-ore (not a closer stone patch)', r?.mining === 'iron-ore', `mining=${r?.mining}`)
-  // Unknown resource → clean failure, not a crash.
-  const bad = await tool<{ ok: boolean, error?: string }>('place_drill_on', `'nonsense-ore'`)
-  check('rejects an unknown resource cleanly', bad?.ok === false && !!bad?.error, JSON.stringify(bad))
-}
-
-async function testPlaceFurnaceAtDrill(): Promise<void> {
-  console.log('place_furnace_at_drill')
-  await resetSandbox({ 'burner-mining-drill': 1, 'stone-furnace': 2 })
-  await tool('place_drill_on', `'iron-ore'`)
-  const r = await tool<{ ok: boolean, error?: string }>('place_furnace_at_drill', `'stone-furnace'`)
-  check('places a furnace on the drill output', !!r?.ok, r?.error ?? JSON.stringify(r))
-  const again = await tool<{ ok: boolean, note?: string }>('place_furnace_at_drill', `'stone-furnace'`)
-  check('idempotent (2nd call = already on output)', again?.ok === true && (again?.note?.includes('already') ?? false), JSON.stringify(again))
-  const s = await scan()
-  const furnaces = s.entities.filter(e => e.type === 'furnace')
-  check('exactly one furnace placed (no clutter)', furnaces.length === 1, `count=${furnaces.length}`)
-}
-
-async function testHandsFreeChain(): Promise<void> {
-  console.log('hands-free chain → production (the rung-2 goal)')
-  await resetSandbox({ 'burner-mining-drill': 1, 'stone-furnace': 1, 'coal': 20 })
-  await tool('place_drill_on', `'iron-ore'`)
-  await tool('place_furnace_at_drill', `'stone-furnace'`)
-  await lua(`local s=game.get_player(1).surface; for _,d in pairs(s.find_entities_filtered{type={'mining-drill','furnace'}}) do d.insert{name='coal',count=5} end; rcon.print('fueled')`)
-  const before = (await tool<{ produced: Record<string, number> }>('production_stats'))?.produced ?? {}
-  await sleep(13000)
-  const after = (await tool<{ produced: Record<string, number> }>('production_stats'))?.produced ?? {}
-  const s = await scan()
-  const drill = s.entities.find(e => e.type === 'mining-drill')
-  const furnace = s.entities.find(e => e.type === 'furnace')
-  check('drill reaches working + mining iron-ore', drill?.status === 'working' && drill?.mining === 'iron-ore', `status=${drill?.status} mining=${drill?.mining}`)
-  check('furnace reaches working', furnace?.status === 'working', `status=${furnace?.status}`)
-  const made = (after['iron-plate'] ?? 0) - (before['iron-plate'] ?? 0)
-  check('iron-plate produced hands-free (productionStats)', made > 0, `delta=${made}`)
+async function testRenderMap(): Promise<void> {
+  console.log('render_map (ASCII minimap)')
+  await resetSandbox({})
+  const d = await createDrillOnIron()
+  const m = await tool<{ grid?: string[], legend?: string, origin?: { x: number, y: number } }>('render_map', `${d.x},${d.y},10`)
+  const grid = m?.grid ?? []
+  check('returns a grid of rows', Array.isArray(m?.grid) && grid.length > 2, `rows=${grid.length}`)
+  const blob = grid.join('\n')
+  check('shows the drill (D) and iron ore (i)', blob.includes('D') && blob.includes('i'), grid.slice(0, 3).join(' | '))
+  check('top row is an x-ruler (has digits)', /-?\d/.test(grid[0] ?? ''), `row0="${grid[0]}"`)
+  check('rows are y-labelled (start with a number)', /^\s*-?\d/.test(grid[1] ?? ''), `row1="${grid[1]}"`)
 }
 
 async function testStatusMapping(): Promise<void> {
   console.log('status_name (waiting_for_space_in_destination)')
-  await resetSandbox({ 'burner-mining-drill': 1, 'coal': 5 })
-  await tool('place_drill_on', `'iron-ore'`)
+  await resetSandbox({})
+  await createDrillOnIron()
   // Put a FULL iron-chest on the drop tile so the drill can't output -> waiting_for_space
-  // immediately (waiting for the ground to fill naturally takes minutes). The bug we guard
-  // against: status 34 was mapped to 'other', so the critic ordered pointless relocations.
+  // immediately. The bug guarded against: status 34 mapped to 'other', so the critic ordered
+  // pointless relocations.
   await lua(
     `local s=game.get_player(1).surface; local d=s.find_entities_filtered{type='mining-drill'}[1]; `
     + `local dp=d.drop_position; local c=s.create_entity{name='iron-chest',position={math.floor(dp.x)+0.5,math.floor(dp.y)+0.5},force=d.force}; `
     + `if c then c.get_inventory(defines.inventory.chest).insert{name='iron-ore',count=99999} end; `
-    + `d.insert{name='coal',count=3}; rcon.print('setup')`,
+    + `rcon.print('setup')`,
   )
   await sleep(4000)
   const s = await scan()
@@ -138,39 +125,11 @@ async function testStatusMapping(): Promise<void> {
   check('a blocked drill reports waiting_for_space_in_destination (not "other")', drill?.status === 'waiting_for_space_in_destination', `status=${drill?.status}`)
 }
 
-async function testPlaceBeltLine(): Promise<void> {
-  console.log('place_belt_line')
-  await resetSandbox({ 'transport-belt': 20 })
-  // Lay an L far from spawn structures; assert it places a contiguous aligned run with no blocked tiles.
-  const pos = await lua(`local p=game.get_player(1); rcon.print(math.floor(p.position.x)..','..math.floor(p.position.y))`)
-  const [px, py] = pos.split(',').map(Number)
-  const sx = px + 6
-  const sy = py - 30 // north of spawn, away from the ore field/water
-  const r = await tool<{ ok: boolean, placed?: number, blocked?: unknown[], error?: string }>('place_belt_line', `${sx},${sy},${sx + 4},${sy + 4}`)
-  check('lays an aligned belt line', !!r?.ok, r?.error ?? JSON.stringify(r))
-  check('placed the full L (9 tiles)', (r?.placed ?? 0) === 9, `placed=${r?.placed} blocked=${JSON.stringify(r?.blocked)}`)
-}
-
-async function testPlaceInserterBetween(): Promise<void> {
-  console.log('place_inserter_between')
-  await resetSandbox({ 'burner-mining-drill': 1, 'stone-furnace': 1, 'transport-belt': 1, 'burner-inserter': 1 })
-  await tool('place_drill_on', `'iron-ore'`)
-  await tool('place_furnace_at_drill', `'stone-furnace'`)
-  // Put a belt one tile east of the furnace, then an inserter from furnace -> belt.
-  await lua(`local s=game.get_player(1).surface; local f=s.find_entities_filtered{type='furnace'}[1]; if f then s.create_entity{name='transport-belt',position={f.position.x+2,f.position.y},force=f.force} end; rcon.print('belt')`)
-  const r = await tool<{ ok: boolean, error?: string }>('place_inserter_between', `'stone-furnace','transport-belt'`)
-  check('places an oriented inserter between two machines', !!r?.ok, r?.error ?? JSON.stringify(r))
-}
-
 async function main(): Promise<void> {
   console.log('\n=== autorio RCON harness (headless) ===\n')
   await testPlayerHeadless()
-  await testPlaceDrillOn()
-  await testPlaceFurnaceAtDrill()
+  await testRenderMap()
   await testStatusMapping()
-  await testHandsFreeChain()
-  await testPlaceBeltLine()
-  await testPlaceInserterBetween()
   // tidy the sandbox so a following agent run starts clean
   await resetSandbox({})
   client.close()

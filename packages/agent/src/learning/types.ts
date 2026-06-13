@@ -131,6 +131,16 @@ export interface TechInfo {
   prerequisites?: string[]
 }
 
+export interface MapView {
+  origin: { x: number, y: number }
+  w: number
+  h: number
+  note: string
+  legend: string
+  /** Rows of the ASCII grid: row 0 is the x ruler; every other row starts with its EXACT y. */
+  grid: string[]
+}
+
 /**
  * The closed capability surface exposed to skill code inside the sandbox.
  * It maps 1:1 onto the `autorio_operations` primitives plus perception, so the
@@ -142,6 +152,8 @@ export interface Ops {
   getState: () => Promise<GameState>
   /** Structured spatial scan: nearby entities (position/direction/status) + resource patches. */
   scan: (radius?: number) => Promise<ScanResult>
+  /** ASCII minimap centred on `center` (defaults to your character). Top row = x ruler (a label every 5 columns); each other row is prefixed by its EXACT y. Read footprints (a 2x2 machine fills 2x2 cells), adjacency and belt/inserter orientation (^>v<) straight off the grid, then place with `placeAt` using the EXACT coordinates shown. Null on failure. */
+  renderMap: (radius?: number, center?: { x: number, y: number }) => Promise<MapView | null>
   /** Look up the EXACT recipe for an item/machine (ingredients + products). Null if unknown/no recipe. Use this instead of guessing recipes. */
   getRecipe: (name: string) => Promise<RecipeInfo | null>
   /** Look up a placeable entity's mechanics (type, energy/fuel need, tile size, what a drill mines). Null if not a known entity. */
@@ -158,17 +170,8 @@ export interface Ops {
   productionStats: () => Promise<{ produced: Record<string, number>, consumed: Record<string, number> } | null>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
-  placeEntity: (entityName: string) => Promise<OpResult>
-  /** Place ONE entity at EXACT tile coords with orientation (no snapping) — for aligned lines. */
+  /** Place ONE entity at EXACT tile coords (no snapping). This is the ONLY placement op — there are no auto-placement helpers. Read the target tile + a free orientation off `renderMap` and pass the exact numbers; a 2x2 machine (drill/furnace/assembler) occupies the tile at (x,y) and the 3 tiles +1 right/down. */
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
-  /** Place a correctly-ORIENTED inserter between two machines so items flow `from` -> `to` (the mod computes the tile + facing; don't compute it yourself). `inserterName` defaults to 'burner-inserter' (works with NO power). e.g. take plates from a furnace onto a belt: `placeInserterBetween('stone-furnace','transport-belt')`. */
-  placeInserterBetween: (fromName: string, toName: string, inserterName?: string) => Promise<OpResult>
-  /** Lay a straight L-shaped line of ALIGNED belts from one tile to another (the mod snaps to tile centres + orients each belt toward the flow — don't compute coords/facing yourself). Reuses belts already on the path. Returns `{ok, data:{placed, reused, blocked:[{x,y}]}}`; `ok` is false if any tile was blocked — mine the obstacle (or pick a clear start/end) and call again. e.g. carry ore from a drill at (10,4) to a furnace row at (10,12): `placeBeltLine(10,4,10,12)`. */
-  placeBeltLine: (startX: number, startY: number, endX: number, endY: number, beltName?: string) => Promise<OpResult>
-  /** Place a mining drill on the nearest patch of a SPECIFIC resource and confirm it mines it. Use THIS for drills, not `placeEntity` — placeEntity auto-snaps to the nearest resource of ANY type, so a drill meant for iron can land on a closer stone/copper patch. `drillName` defaults to 'burner-mining-drill'. Walk near the resource first. e.g. `placeDrillOn('iron-ore')`. Returns `{ok:false, error}` if it can't seat the drill ON that resource. */
-  placeDrillOn: (resource: string, drillName?: string) => Promise<OpResult>
-  /** Put a furnace ON the nearest drill's output tile so it's fed hands-free (automation rung 2). Use THIS to fix a drill reading `waiting_for_space_in_destination` — don't compute the drop tile yourself. Idempotent (a furnace already there = ok) and it clears your own misplaced furnaces blocking the spot. `furnaceName` defaults to 'stone-furnace'. Then fuel both machines with coal. e.g. `placeFurnaceAtDrill()`. */
-  placeFurnaceAtDrill: (furnaceName?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>

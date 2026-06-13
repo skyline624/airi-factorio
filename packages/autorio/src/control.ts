@@ -185,16 +185,6 @@ remote.add_interface('autorio_operations', {
     log(`[AUTORIO] New mine_entity task: ${entity_name} x${count}`)
     return true
   },
-  place_entity: (entity_name: string) => {
-    task_manager.add_task({
-      type: TaskStates.PLACING,
-      entity_name,
-      position: undefined,
-    })
-
-    log(`[AUTORIO] New place_entity task: ${entity_name}`)
-    return true
-  },
   place_entity_at: (entity_name: string, x: number, y: number, direction: string) => {
     task_manager.add_task({
       type: TaskStates.PLACING_AT,
