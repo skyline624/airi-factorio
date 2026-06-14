@@ -1,12 +1,9 @@
-import type { AiriBridge } from './airi/bridge'
-import type { MessageHandler } from './llm/message-handler'
-import type { ChatMessage, LLMMessage, PlayerEventMessage, StdoutMessage } from './parser'
+import type { LLMMessage, PlayerEventMessage } from './parser'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { env } from 'node:process'
 import { Format, setGlobalFormat, useLogg } from '@guiiai/logg'
-import { backOff } from 'exponential-backoff'
 import { connect } from 'it-ws'
 import { startAiriBridge } from './airi/bridge'
 import { startAutonomousLoop } from './autonomous'
@@ -40,7 +37,7 @@ const eventMinIntervalMs = new Map<string, number>([
 // (new objectives, success/failure summaries, autonomous decisions) is
 // suppressed in the in-game chat. Chat replies to direct human messages
 // are routed through `rconSay` directly and bypass this gate.
-const gatedSay = async (message: string): Promise<void> => {
+async function gatedSay(message: string): Promise<void> {
   if (debugConfig.agentSay) {
     await rconSay(message)
   }
@@ -54,47 +51,6 @@ function shouldForwardEvent(message: PlayerEventMessage): boolean {
   }
   lastForwardedAt.set(message.eventType, now)
   return true
-}
-
-async function executeCommandFromAgent<T extends StdoutMessage>(message: T, messageHandler: MessageHandler, airiBridge?: AiriBridge | null) {
-  const llmResponse = await backOff(() => messageHandler.handleMessage(message), {
-    timeMultiple: 2,
-    maxDelay: 10000,
-    retry(e, attemptNumber) {
-      logger.withFields({ error: e.message, attemptNumber }).error('Failed to handle message, attempt to retry')
-      return true
-    },
-  })
-
-  if (!llmResponse) {
-    logger.error('Failed to handle message')
-    return
-  }
-
-  await rconSay(llmResponse.chatMessage)
-
-  // Keep the general in the loop: mirror what the bot says back as passive context.
-  if (llmResponse.chatMessage) {
-    airiBridge?.sendContextUpdate(`[bot] ${llmResponse.chatMessage}`, undefined, 'factorio:agent')
-  }
-
-  if (llmResponse.operationCommands.length === 0) {
-    return
-  }
-
-  logger.withFields({ operationCommands: llmResponse.operationCommands, currentStep: llmResponse.currentStep }).debug('Executing operation commands')
-
-  const command = llmResponse.operationCommands.join(';')
-  await rconCommand(`/c ${command}`)
-}
-
-// Serialize all agent turns (main loop + AIRI-relayed commands) so concurrent
-// handleMessage calls never interleave the LLM conversation history.
-let agentChain: Promise<unknown> = Promise.resolve()
-function enqueueAgentTask(task: () => Promise<void>): Promise<void> {
-  const run = agentChain.then(task, task)
-  agentChain = run.catch(() => {})
-  return run
 }
 
 // Vision-backed decision: capture a screenshot via the connected client, send it with the
@@ -306,61 +262,70 @@ async function main() {
     return
   }
 
-  const messageHandler = await createMessageHandler()
+  // --- Reactive mode (default): the SAME action-as-code engine as learning, but the
+  // objectives come from the HUMAN CHAT (and the AIRI general) — no curriculum, no goal.
+  // One unified engine (renderMap/placeAt/skills/critic); the mode only changes the
+  // objective source. (Replaces the old prompt.md/operationCommands reactive path.)
+  await waitForPlayer()
+  logger.log('Starting in REACTIVE mode (chat-driven action-as-code)')
+  const raw = async (input: string): Promise<string> => rconCommand(input)
+  const session = startLearningSession({
+    raw,
+    say: gatedSay,
+    playerName: factorioConfig.playerName,
+    reactive: true,
+    curriculumEnabled: false,
+    ultimateGoal: '',
+    maxObjectives: 0,
+    objectives: [],
+    actionModel: learningConfig.actionModel || openaiConfig.model,
+    criticModel: learningConfig.criticModel || openaiConfig.model,
+    embeddingModel: learningConfig.embeddingModel,
+    embeddingBaseUrl: learningConfig.embeddingBaseUrl || openaiConfig.baseUrl,
+    skillsDir: learningConfig.skillsDir,
+    sandboxTimeoutMs: learningConfig.sandboxTimeoutMs,
+    settleTimeoutMs: learningConfig.settleTimeoutMs,
+    maxOpsPerSkill: learningConfig.maxOpsPerSkill,
+    maxRetries: learningConfig.maxRetries,
+  })
 
-  // Optional bridge to the AIRI "general". A spark:command from the general is treated
-  // exactly like a chat message from the master (same decision path).
+  // A spark:command from the AIRI general is a chat-equivalent objective.
   const airiBridge = await startAiriBridge(airiConfig, (text) => {
-    const chatMsg: ChatMessage = {
-      type: 'chat',
-      username: 'AIRI',
-      message: text,
-      isServer: false,
-      date: new Date().toISOString(),
-    }
-    return enqueueAgentTask(() => executeCommandFromAgent(chatMsg, messageHandler, airiBridge))
+    session.onChat('AIRI', text)
+    return Promise.resolve()
   })
 
   for await (const buffer of ws.source) {
     const line = Buffer.from(buffer).toString('utf-8')
 
-    const chatMessage = parseChatMessage(line)
-    if (chatMessage) {
-      if (chatMessage.isServer) {
-        continue
-      }
-
-      gameLogger.withContext('chat').log(`${chatMessage.username}: ${chatMessage.message}`)
-
-      await enqueueAgentTask(() => executeCommandFromAgent(chatMessage, messageHandler, airiBridge))
-      continue
-    }
-
     const modErrorMessage = parseModErrorMessage(line)
     if (modErrorMessage) {
-      gameLogger.withContext('mod').error(`${modErrorMessage.error}`)
-
-      await enqueueAgentTask(() => executeCommandFromAgent(modErrorMessage, messageHandler, airiBridge))
+      gameLogger.withContext('mod').error(modErrorMessage.error)
+      session.onSettled('error', modErrorMessage.error)
       continue
     }
 
     const operationCompletedMessage = parseOperationCompletedMessage(line)
     if (operationCompletedMessage) {
-      gameLogger.withContext('mod').log(`All operations completed`)
-
-      await enqueueAgentTask(() => executeCommandFromAgent(operationCompletedMessage, messageHandler, airiBridge))
+      session.onSettled('completed')
       continue
     }
 
     const playerEventMessage = parsePlayerEventMessage(line)
     if (playerEventMessage) {
       gameLogger.withContext('mod').log(`[EVENT] ${playerEventMessage.eventType} ${playerEventMessage.raw}`)
-
       if (shouldForwardEvent(playerEventMessage)) {
-        // Alert the general (same throttle as the local LLM) and let the local agent react.
         airiBridge?.notifyEvent(playerEventMessage)
-        await enqueueAgentTask(() => executeCommandFromAgent(playerEventMessage, messageHandler, airiBridge))
       }
+      session.onPerception(`[STATUS] ${playerEventMessage.eventType} ${playerEventMessage.raw}`.trim())
+      continue
+    }
+
+    const chatMessage = parseChatMessage(line)
+    if (chatMessage && !chatMessage.isServer) {
+      gameLogger.withContext('chat').log(`${chatMessage.username}: ${chatMessage.message}`)
+      airiBridge?.sendContextUpdate(`[player] ${chatMessage.username}: ${chatMessage.message}`, undefined, 'factorio:player')
+      session.onChat(chatMessage.username, chatMessage.message)
       continue
     }
   }

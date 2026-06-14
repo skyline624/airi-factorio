@@ -2,9 +2,9 @@ import type { GameState, ScanResult } from './types'
 import { useLogg } from '@guiiai/logg'
 import { generateCode, summarizeScan } from './action'
 import { attemptObjective } from './attempt'
-import { extractLastJsonLine } from './json'
 import { verify } from './critic'
 import { proposeNextObjective } from './curriculum'
+import { extractLastJsonLine } from './json'
 import { createOps, extractEntryName, runSkill } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
@@ -22,6 +22,8 @@ export interface LearningSessionDeps {
    * connected player. Bound into the captureState closure.
    */
   playerName?: string
+  /** Reactive mode: no curriculum or fixed list — WAIT for chat commands and run each as an objective through the same action-as-code pipeline (renderMap/placeAt/skills/critic). */
+  reactive?: boolean
   /** When true, the curriculum proposes objectives; otherwise the fixed `objectives` list is used. */
   curriculumEnabled: boolean
   /** The end goal the curriculum works toward. */
@@ -99,6 +101,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
 
   let running = true
   let pendingRedirect: string | null = null
+  let reactiveWaiter: (() => void) | null = null
   const completed: string[] = []
   const failed: string[] = []
 
@@ -141,7 +144,31 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   }
 
   async function loop() {
-    logger.withFields({ curriculum: deps.curriculumEnabled, ultimateGoal: deps.ultimateGoal, maxObjectives: deps.maxObjectives, knownSkills: library.size() }).log('Learning session started (steps 3+4+5: action-as-code + skill library + curriculum)')
+    logger.withFields({ reactive: deps.reactive ?? false, curriculum: deps.curriculumEnabled, ultimateGoal: deps.ultimateGoal, maxObjectives: deps.maxObjectives, knownSkills: library.size() }).log('Action-as-code session started')
+
+    // Reactive mode: the human chat is the sole source of objectives. Wait for a command,
+    // run it through the SAME action pipeline (renderMap/placeAt/skills/critic), then wait
+    // again. Same engine as learning — only the objective source differs.
+    if (deps.reactive) {
+      logger.log('Reactive mode: waiting for chat commands (type a task in-game)…')
+      // A direct human command must be executed LITERALLY and minimally — not turned into a
+      // full autonomous build. Passed as context so the action model scopes its code.
+      const reactiveHint = 'DIRECT human command (reactive mode): do EXACTLY what is asked and NOTHING more — the smallest action that satisfies it. "find"/"search"/"locate"/"recherche"/"trouve" a resource = walkToEntity to it and report what you see; do NOT place, craft, fuel, mine, or build ANYTHING unless the command explicitly says to. Do NOT reuse a learned skill that does more than the command asks. The command may be in French.'
+      // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
+      while (running) {
+        if (pendingRedirect) {
+          const objective = pendingRedirect
+          pendingRedirect = null
+          await runOneObjective(objective, reactiveHint)
+        }
+        else {
+          await new Promise<void>((resolve) => {
+            reactiveWaiter = resolve
+          })
+        }
+      }
+      return
+    }
 
     if (deps.curriculumEnabled) {
       // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
@@ -168,6 +195,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           // Retry the proposal a few times (the cloud relay usually recovers on the next call)
           // before giving up, so one transient hiccup doesn't end an otherwise healthy session.
           let proposed: Awaited<ReturnType<typeof proposeNextObjective>> = null
+          // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
           for (let r = 1; r <= 3 && !proposed && running; r++) {
             proposed = await proposeNextObjective({
               ultimateGoal: deps.ultimateGoal,
@@ -213,12 +241,21 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     onSettled: (result, detail) => settleBus.settle(result, detail),
     onChat: (username, message) => {
       logger.withContext('chat').log(`${username}: ${message}`)
-      // A human chat line redirects the next objective.
+      // A human chat line is the next objective (a redirection in curriculum mode, the SOLE
+      // driver in reactive mode). Wake the reactive loop if it's idle-waiting for a command.
       pendingRedirect = message
+      if (reactiveWaiter) {
+        reactiveWaiter()
+        reactiveWaiter = null
+      }
     },
     onPerception: text => logger.withContext('perception').debug(text),
     stop: () => {
       running = false
+      if (reactiveWaiter) {
+        reactiveWaiter()
+        reactiveWaiter = null
+      }
       settleBus.cancel()
     },
   }
