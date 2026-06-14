@@ -174,6 +174,25 @@ remote.add_interface('autorio_operations', {
 
     return true
   },
+  // Walk to an arbitrary tile (x,y) — the only way to reach a spot with no entity, e.g. a
+  // water shore for an offshore-pump. Reuses the WALKING_TO_ENTITY pathfinder with the goal
+  // as the single candidate (the character stops within reach of it, on land near water).
+  walk_to_position: (x: number, y: number) => {
+    log(`[AUTORIO] New walk_to_position task: (${x},${y})`)
+    task_manager.add_task({
+      type: TaskStates.WALKING_TO_ENTITY,
+      entity_name: '(position)',
+      search_radius: 0,
+      goal_position: { x, y },
+      path: null,
+      path_drawn: false,
+      path_index: 1,
+      calculating_path: false,
+      target_position: null,
+    })
+
+    return true
+  },
 
   mine_entity: (entity_name: string, count: number = 1) => {
     task_manager.add_task({
@@ -680,6 +699,13 @@ function state_walking_to_entity(player: LuaPlayer) {
   // The agent passes an arbitrary string; find_entities_filtered{name=...} THROWS if it
   // isn't a real entity NAME (e.g. 'tree', a TYPE — trees are tree-01, …). Resolve
   // name -> type -> fail cleanly instead of crashing on_tick.
+  // A walk_to_position task heads straight to its goal (one candidate) — no entity search.
+  if (!params.candidates && params.goal_position !== undefined) {
+    params.candidates = [params.goal_position]
+    params.candidate_index = 0
+    log(`[AUTORIO] Walk: heading directly to position (${params.goal_position.x},${params.goal_position.y})`)
+  }
+
   if (!params.candidates) {
     const target_name = params.entity_name
     const search_radius = params.search_radius

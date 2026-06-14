@@ -1,4 +1,4 @@
-import type { BoundingBox, MapPosition } from 'factorio:runtime'
+import type { LuaEntity, LuaForce, LuaPlayer, LuaSurface, MapPosition } from 'factorio:runtime'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
@@ -49,6 +49,9 @@ function status_name(status: number | undefined): string {
       return 'item_ingredient_shortage'
     case defines.entity_status.fluid_ingredient_shortage:
       return 'fluid_ingredient_shortage'
+    // A steam-engine/turbine with no steam reaching it (boiler not connected / not heating).
+    case defines.entity_status.no_input_fluid:
+      return 'no_input_fluid'
     case defines.entity_status.full_output:
       return 'full_output'
     // A drill that MINES fine but has nowhere to put the ore (no furnace/belt/chest at
@@ -68,6 +71,124 @@ function status_name(status: number | undefined): string {
     default:
       return 'other'
   }
+}
+
+// --- Deterministic steam-power assembly (build_steam_power) ---------------------
+// The fluid alignment of a pump -> boiler -> steam-engine chain is a fixed mechanism
+// with a single correct solution, NOT a spatial layout choice — exactly the kind of
+// thing an LLM cannot reliably emit as orchestration code (it knows the data via the
+// map's pump_spots, but mis-sequences the multi-step build). So we build it in Lua and
+// let the ENGINE confirm every fluid hookup via PipeConnection.target — no hardcoded
+// geometry, just place-and-verify.
+
+const WATER_TILE_NAMES = ['water', 'deepwater', 'water-shallow', 'water-mud', 'deepwater-green', 'water-green']
+const POLE_ITEM_NAMES = ['small-electric-pole', 'medium-electric-pole', 'big-electric-pole', 'substation']
+
+// Candidate offshore-pump placements for a water tile (wx,wy = its integer tile coords).
+// The pump does NOT sit on the water: it sits on the adjacent LAND tile and FACES into the
+// water (this is the rule the in-game green placement preview enforces). Return the 4 land
+// neighbours with the direction that points toward the water.
+function pump_candidates(wx: number, wy: number): Array<{ x: number, y: number, dname: string, dir: defines.direction }> {
+  return [
+    { x: wx + 0.5, y: wy - 0.5, dname: 'south', dir: defines.direction.south }, // pump NORTH of water, faces south
+    { x: wx + 0.5, y: wy + 1.5, dname: 'north', dir: defines.direction.north }, // pump SOUTH of water, faces north
+    { x: wx - 0.5, y: wy + 0.5, dname: 'east', dir: defines.direction.east }, //   pump WEST of water, faces east
+    { x: wx + 1.5, y: wy + 0.5, dname: 'west', dir: defines.direction.west }, //   pump EAST of water, faces west
+  ]
+}
+
+// Absolute target tile of the FIRST connection whose flow_direction is one of `flows`.
+// EXACT match (no input-output folding): a boiler's water ports are 'input-output' and
+// its steam port is 'output', so ['output'] returns the STEAM target, not the water one
+// (folding them was why the engine got placed on the water side and never received steam).
+function connection_target_of(entity: LuaEntity, flows: string[]): MapPosition | undefined {
+  const fb = entity.fluidbox
+  for (let i = 1; i <= fb.length; i++) {
+    for (const c of fb.get_pipe_connections(i)) {
+      for (const f of flows) {
+        if (c.flow_direction === f) {
+          return c.target_position
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+// True when any connection whose flow_direction is one of `flows` is ACTUALLY linked to a
+// neighbour fluidbox — the game's own confirmation the hookup took. Check this on the
+// JUST-PLACED entity's intake (['input','input-output']); checking the upstream's 'output'
+// gave a false positive because the boiler's already-linked water port is 'input-output'.
+function has_linked_connection(entity: LuaEntity, flows: string[]): boolean {
+  const fb = entity.fluidbox
+  for (let i = 1; i <= fb.length; i++) {
+    for (const c of fb.get_pipe_connections(i)) {
+      if (c.target !== undefined) {
+        for (const f of flows) {
+          if (c.flow_direction === f) {
+            return true
+          }
+        }
+      }
+    }
+  }
+  return false
+}
+
+// Clear organic obstacles (trees/rocks only — never ore or built entities) around a
+// tile so a cramped/forested shore doesn't block the boiler/engine placement.
+function clear_growth_around(surface: LuaSurface, center: MapPosition, radius: number) {
+  for (const e of surface.find_entities_filtered({ position: center, radius, type: ['tree', 'simple-entity'] })) {
+    if (e.valid) {
+      e.destroy()
+    }
+  }
+}
+
+// If the character ended up inside a freshly-placed entity's collision box, shove it
+// onto the nearest free tile so the player is never boxed in by the build.
+function push_clear_of(player: LuaPlayer, surface: LuaSurface, entity: LuaEntity | undefined) {
+  const character = player.character
+  if (character === undefined || entity === undefined || !entity.valid) {
+    return
+  }
+  const bb = entity.bounding_box
+  const cp = character.position
+  if (cp.x >= bb.left_top.x && cp.x <= bb.right_bottom.x && cp.y >= bb.left_top.y && cp.y <= bb.right_bottom.y) {
+    const free = surface.find_non_colliding_position('character', cp, 8, 0.25)
+    if (free !== undefined) {
+      character.teleport(free)
+    }
+  }
+}
+
+// Place `name` near `target` and keep it only once the ENGINE reports `upstream`'s
+// `flow` connection as linked (place-and-verify). Tries near offsets + all 4 rotations;
+// trial placements use raise_built:false and destroy() (no death events) so failed tries
+// don't spam the mod's perception handlers. Returns the kept entity or undefined.
+function place_connected(surface: LuaSurface, force: LuaForce, player: LuaPlayer, name: string, target: MapPosition, verify_flows: string[]): LuaEntity | undefined {
+  const offsets = [0, 0.5, -0.5, 1, -1, 1.5, -1.5, 2, -2, 2.5, -2.5]
+  const dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
+  for (const dy of offsets) {
+    for (const dx of offsets) {
+      const position = { x: target.x + dx, y: target.y + dy }
+      for (const dir of dirs) {
+        if (!surface.can_place_entity({ name, position, direction: dir, force, build_check_type: defines.build_check_type.manual })) {
+          continue
+        }
+        const e = surface.create_entity({ name, position, direction: dir, force, raise_built: false, player })
+        if (e === undefined) {
+          continue
+        }
+        // Keep this placement only if the NEWLY-PLACED entity's intake actually linked up.
+        if (has_linked_connection(e, verify_flows)) {
+          return e
+        }
+        e.destroy()
+      }
+    }
+  }
+  return undefined
 }
 
 export function create_tools_remote_interface() {
@@ -309,6 +430,34 @@ export function create_tools_remote_interface() {
       if (player !== undefined && player.character !== undefined) {
         put(player.position.x, player.position.y, '@')
       }
+      // Valid offshore-pump placements — the non-visual constraint the model cannot read off
+      // the grid. For each water tile, test can_place_entity in the 4 directions; mark a valid
+      // spot 'O' and return the EXACT { x, y, direction } so the model placeAt's it directly.
+      const pump_spots: Array<{ x: number, y: number, direction: string }> = []
+      const pump_force = game.forces.player
+      for (let row = 0; row < h && pump_spots.length < 6; row++) {
+        for (let col = 0; col < w && pump_spots.length < 6; col++) {
+          const tx = ox + col
+          const ty = oy + row
+          const wt = surface.get_tile(tx, ty)
+          if (!(wt.valid && wt.collides_with('water_tile'))) {
+            continue
+          }
+          // The pump sits on the LAND tile beside the water, FACING it (the green-preview rule),
+          // so pump_spots advertises the land position + direction the player could place by hand.
+          for (const cand of pump_candidates(tx, ty)) {
+            if (surface.can_place_entity({ name: 'offshore-pump', position: { x: cand.x, y: cand.y }, direction: cand.dir, force: pump_force, build_check_type: defines.build_check_type.manual })) {
+              pump_spots.push({ x: cand.x, y: cand.y, direction: cand.dname })
+              const pcol = math.floor(cand.x) - ox
+              const prow = math.floor(cand.y) - oy
+              if (pcol >= 0 && pcol < w && prow >= 0 && prow < h) {
+                overlay[`${pcol}_${prow}`] = 'O'
+              }
+              break
+            }
+          }
+        }
+      }
       const pad_right = (str: string, n: number) => {
         let out = str
         while (out.length < n) {
@@ -347,8 +496,8 @@ export function create_tools_remote_interface() {
         // Each row prefixed with its EXACT y coordinate.
         lines[row + 1] = `${pad_left(`${oy + row}`, lw)} ${s}`
       }
-      const legend = 'ground=. water=~ cliff=# tree=T rock=* | ore: i=iron c=copper k=coal s=stone | D=drill F=furnace L=lab B=boiler E=steam-engine P=offshore-pump A=assembler n=inserter +=pole ==pipe H=chest | belt ^>v< points where items move | @=you'
-      rcon.print(helpers.table_to_json({ ok: true, origin: { x: ox, y: oy }, w, h, note: 'Coords are EXACT: the top line lists x every 5 columns; each row starts with its y. The cell at column c / row r is world (origin.x+c, origin.y+r). Pass these REAL numbers to placeAt - never (0,0).', legend, grid: lines }))
+      const legend = 'ground=. water=~ cliff=# tree=T rock=* | ore: i=iron c=copper k=coal s=stone | D=drill F=furnace L=lab B=boiler E=steam-engine P=offshore-pump A=assembler n=inserter +=pole ==pipe H=chest | O=valid offshore-pump spot (see pump_spots) | belt ^>v< points where items move | @=you'
+      rcon.print(helpers.table_to_json({ ok: true, origin: { x: ox, y: oy }, w, h, note: 'Coords are EXACT: the top line lists x every 5 columns; each row starts with its y. The cell at column c / row r is world (origin.x+c, origin.y+r). Pass these REAL numbers to placeAt - never (0,0). pump_spots lists ready-to-use {x,y,direction} for an offshore-pump (placeAt them directly).', legend, grid: lines, pump_spots }))
       return true
     },
     // Locate the NEAREST thing of a given name well beyond scan range — the fix for
@@ -580,6 +729,172 @@ export function create_tools_remote_interface() {
         consumed[item] = count
       }
       rcon.print(helpers.table_to_json({ produced, consumed }))
+      return true
+    },
+    // Set the recipe on the nearest assembling-machine to the player. An assembler does
+    // NOTHING until it has a recipe (and power — assemblers are electric). This is what lets
+    // the agent AUTOMATE intermediates (gears, circuits) instead of hand-crafting them.
+    set_recipe: (recipe_name: string) => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player' }))
+        return false
+      }
+      const recipe = player.force.recipes[recipe_name]
+      if (recipe === undefined || !recipe.enabled) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `recipe '${recipe_name}' is unknown or not researched yet` }))
+        return false
+      }
+      const asms = player.surface.find_entities_filtered({ position: player.position, radius: 20, type: 'assembling-machine' })
+      if (asms.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no assembling-machine within 20 tiles (place one first)' }))
+        return false
+      }
+      const asm = get_nearest_entity(player, asms)
+      if (asm === undefined || asm === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no assembling-machine found' }))
+        return false
+      }
+      asm.set_recipe(recipe_name)
+      rcon.print(helpers.table_to_json({ ok: true, recipe: recipe_name, x: math.floor(asm.position.x * 10) / 10, y: math.floor(asm.position.y * 10) / 10 }))
+      return true
+    },
+    // Deterministic ONE-CALL steam power: places offshore-pump -> boiler -> steam-engine,
+    // fluid-aligned and verified by the engine itself, fuels the boiler with coal, and wires
+    // an electric pole if you have one. Needs you NEAR water (walk to a shore first) and the
+    // items in your inventory (1 offshore-pump, 1 boiler, 1 steam-engine, some coal). Returns
+    // JSON { ok, error?, pump, boiler, engine, coal, pole, note } with placed coords+statuses.
+    build_steam_power: () => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player' }))
+        return false
+      }
+      const surface = player.surface
+      const force = player.force
+      const inv = player.get_main_inventory()
+      if (inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no inventory' }))
+        return false
+      }
+
+      // 1) Inventory requirements — fail with an explicit shopping list, not a silent dud.
+      const missing: string[] = []
+      if (inv.get_item_count('offshore-pump') < 1) {
+        missing.push('offshore-pump x1')
+      }
+      if (inv.get_item_count('boiler') < 1) {
+        missing.push('boiler x1')
+      }
+      if (inv.get_item_count('steam-engine') < 1) {
+        missing.push('steam-engine x1')
+      }
+      if (inv.get_item_count('coal') < 1) {
+        missing.push('coal (fuel)')
+      }
+      if (missing.length > 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `missing items: ${missing.join(', ')}. Craft/get them first.` }))
+        return false
+      }
+
+      // 2) A valid offshore-pump spot: nearest water tiles to the player, first placeable
+      //    (tile,direction) wins. Mirrors render_map's pump_spots (build_check_type.script).
+      const pp = player.position
+      const tiles = surface.find_tiles_filtered({ position: pp, radius: 40, name: WATER_TILE_NAMES })
+      if (tiles.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no water within 40 tiles — walk to a water shore first (use findNearest("water") then walkTo)' }))
+        return false
+      }
+      tiles.sort((a, b) => distance(pp, a.position) - distance(pp, b.position))
+      let pump: LuaEntity | undefined
+      for (const t of tiles) {
+        // build_check_type.manual = the in-game GREEN placement preview: the pump sits on
+        // the LAND tile beside the water, facing into it. (script was laxer and accepted a
+        // BACKWARDS pump centred ON the water whose output fell on water, so nothing connected.)
+        for (const cand of pump_candidates(math.floor(t.position.x), math.floor(t.position.y))) {
+          if (surface.can_place_entity({ name: 'offshore-pump', position: { x: cand.x, y: cand.y }, direction: cand.dir, force, build_check_type: defines.build_check_type.manual })) {
+            pump = surface.create_entity({ name: 'offshore-pump', position: { x: cand.x, y: cand.y }, direction: cand.dir, force, raise_built: true, player })
+            if (pump !== undefined) {
+              break
+            }
+          }
+        }
+        if (pump !== undefined) {
+          break
+        }
+      }
+      if (pump === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'found water but no placeable offshore-pump spot nearby — try a cleaner/straighter shore' }))
+        return false
+      }
+      inv.remove({ name: 'offshore-pump', count: 1 })
+      push_clear_of(player, surface, pump)
+
+      // 3) Boiler onto the pump's water output (clear trees first); verify the boiler's
+      //    water intake (input / input-output) actually linked.
+      const pout = connection_target_of(pump, ['output'])
+      if (pout === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'placed the pump but could not read its water output connection' }))
+        return false
+      }
+      clear_growth_around(surface, pout, 4)
+      const boiler = place_connected(surface, force, player, 'boiler', pout, ['input', 'input-output'])
+      if (boiler === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `placed the pump at (${math.floor(pump.position.x)},${math.floor(pump.position.y)}) but no boiler position connected to its water output (terrain too cramped) — try another shore`, pump: { x: math.floor(pump.position.x), y: math.floor(pump.position.y) } }))
+        return false
+      }
+      inv.remove({ name: 'boiler', count: 1 })
+
+      // 4) Steam-engine onto the boiler's STEAM output (strict 'output', so not the water
+      //    side); verify the engine's steam intake actually linked.
+      const sout = connection_target_of(boiler, ['output'])
+      let engine: LuaEntity | undefined
+      if (sout !== undefined) {
+        clear_growth_around(surface, sout, 4)
+        engine = place_connected(surface, force, player, 'steam-engine', sout, ['input', 'input-output'])
+      }
+      if (engine !== undefined) {
+        inv.remove({ name: 'steam-engine', count: 1 })
+      }
+
+      // 5) Fuel the boiler so it actually heats (the chain is dead without coal).
+      const want_coal = math.min(inv.get_item_count('coal'), 25)
+      const inserted = want_coal > 0 ? boiler.insert({ name: 'coal', count: want_coal }) : 0
+      if (inserted > 0) {
+        inv.remove({ name: 'coal', count: inserted })
+      }
+
+      // 6) Wire an electric pole next to the engine if the player has one (optional —
+      //    without it the chain still generates but isn't connected to a network).
+      let pole_placed = false
+      if (engine !== undefined) {
+        for (const pole_name of POLE_ITEM_NAMES) {
+          if (inv.get_item_count(pole_name) < 1) {
+            continue
+          }
+          const ppos = surface.find_non_colliding_position(pole_name, engine.position, 6, 0.5)
+          if (ppos !== undefined) {
+            const pole = surface.create_entity({ name: pole_name, position: ppos, force, raise_built: true, player })
+            if (pole !== undefined) {
+              inv.remove({ name: pole_name, count: 1 })
+              pole_placed = true
+              break
+            }
+          }
+        }
+      }
+
+      push_clear_of(player, surface, boiler)
+      push_clear_of(player, surface, engine)
+
+      const pump_info = { x: math.floor(pump.position.x), y: math.floor(pump.position.y), status: status_name(pump.status) }
+      const boiler_info = { x: math.floor(boiler.position.x), y: math.floor(boiler.position.y), status: status_name(boiler.status) }
+      const engine_info = engine !== undefined ? { x: math.floor(engine.position.x), y: math.floor(engine.position.y), status: status_name(engine.status) } : undefined
+      const note = engine === undefined
+        ? 'pump + fueled boiler built, but no steam-engine spot connected to the boiler steam output — clear space behind the boiler and place a steam-engine there.'
+        : (pole_placed ? 'pump -> boiler -> steam-engine built, fluid-connected and fueled, with an electric pole.' : 'pump -> boiler -> steam-engine built, fluid-connected and fueled. No electric pole in inventory — add a pole next to the engine to power a network.')
+      log(`[AUTORIO] build_steam_power: ${note}`)
+      rcon.print(helpers.table_to_json({ ok: engine !== undefined, pump: pump_info, boiler: boiler_info, engine: engine_info, coal: inserted, pole: pole_placed, note }))
       return true
     },
   })

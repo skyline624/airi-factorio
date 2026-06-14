@@ -131,6 +131,22 @@ export interface TechInfo {
   prerequisites?: string[]
 }
 
+/** Result of `ops.buildSteamPower()`: the deterministic pump->boiler->engine build. */
+export interface SteamPowerResult {
+  /** true only when the full chain (incl. a connected steam-engine) was built. */
+  ok: boolean
+  /** present on failure (e.g. not near water, missing items, terrain too cramped). */
+  error?: string
+  pump?: { x: number, y: number, status?: string }
+  boiler?: { x: number, y: number, status?: string }
+  engine?: { x: number, y: number, status?: string }
+  /** units of coal loaded into the boiler. */
+  coal?: number
+  /** whether an electric pole was wired next to the engine. */
+  pole?: boolean
+  note?: string
+}
+
 export interface MapView {
   origin: { x: number, y: number }
   w: number
@@ -139,6 +155,8 @@ export interface MapView {
   legend: string
   /** Rows of the ASCII grid: row 0 is the x ruler; every other row starts with its EXACT y. */
   grid: string[]
+  /** Ready-to-use offshore-pump placements (the non-visual water-edge validity, computed by the mod). placeAt one directly. */
+  pump_spots?: Array<{ x: number, y: number, direction: string }>
 }
 
 /**
@@ -169,11 +187,17 @@ export interface Ops {
   /** The force's cumulative production/consumption counters — what was MADE (not just held). Use it to verify real output: compare before/after a chain runs. NOTE: hand-mining/crafting counts too. */
   productionStats: () => Promise<{ produced: Record<string, number>, consumed: Record<string, number> } | null>
   walkToEntity: (entityName: string, searchRadius?: number) => Promise<OpResult>
+  /** Walk to an arbitrary tile (x,y) — the ONLY way to reach a spot with no entity, e.g. a water shore for an offshore-pump (water is a tile, walkToEntity can't target it). The character stops within reach. */
+  walkTo: (x: number, y: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
   /** Place ONE entity at EXACT tile coords (no snapping). This is the ONLY placement op — there are no auto-placement helpers. Read the target tile + a free orientation off `renderMap` and pass the exact numbers; a 2x2 machine (drill/furnace/assembler) occupies the tile at (x,y) and the 3 tiles +1 right/down. */
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
+  /** Set the recipe of the nearest assembling-machine — it produces NOTHING without one (and assemblers need ELECTRICITY). Place the assembler, walk to it, then `setRecipe('iron-gear-wheel')`. This is how you AUTOMATE an intermediate instead of hand-crafting it. */
+  setRecipe: (recipe: string) => Promise<OpResult>
+  /** Deterministically build a fluid-aligned steam-power chain in ONE call: places offshore-pump -> boiler -> steam-engine (alignment verified by the game), fuels the boiler with your coal, and wires a pole if you have one. Walk NEAR water first and hold the items (1 offshore-pump, 1 boiler, 1 steam-engine, coal). Use this instead of hand-placing the chain — the fluid faces are a fixed mechanism, not a layout you read off the map. */
+  buildSteamPower: () => Promise<SteamPowerResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>
   wait: (ticks: number) => Promise<OpResult>
   attackNearestEnemy: (searchRadius?: number) => Promise<OpResult>

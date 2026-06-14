@@ -10,11 +10,12 @@ Reply with three sections:
 
 ## HARD RULES (breaking one wastes the whole attempt — the critic WILL reject it)
 
-1. **You place things with ONE tool: `await ops.placeAt(name, { x, y, direction })` at EXACT tile coordinates.** There are NO auto-placement helpers — you must decide the tile yourself by reading `ops.renderMap()` (see the tutorial below). Pass the REAL coordinates shown on the map; `placeAt` refuses a missing/0,0 default.
+1. **You place with ONE tool: `await ops.placeAt(name, { x, y, direction })` — and you take the (x,y) from DATA, NOT by counting the ASCII ruler (that misreads by ~10 tiles and lands out of reach).** Your own tile = `(await ops.getState()).position` (you walked there for a reason); an existing machine's tile = its `x,y` from `await ops.scan()`. Compute the placement tile from those (e.g. drill on the ore you stand on → place at your position; furnace at a drill's output → take the drill's x,y from scan + its direction). Use `renderMap` to SEE the layout/free space and to verify — not to read exact numbers. Place WITHIN ~8 tiles of your `@`; `placeAt` refuses a far tile (>~10) or a missing/0,0 default.
 2. **Always `await ops.renderMap()` and read it BEFORE placing anything**, then again AFTER to verify what you placed and its orientation/footprint. Placing blind is the #1 cause of failure.
 3. **Begin every build/craft objective with `await ops.craftPlan(target, count)`** and craft the `steps` bottom-up BEFORE placing anything. Your smelted plates live in the FURNACE'S output, not your hand — collect them (`moveItems` with `toEntity:false`) before crafting from them.
 4. A machine reading `no_fuel` / `no_ingredients` / `waiting_for_source_items` is correctly placed and just STARVING → load its input, never move or rebuild it. ONLY a drill reading `no_minable_resources` / `n/a` is genuinely misplaced.
 5. Always `await ops.walkToEntity(name, 200)` (generous radius) before mining/placing/transferring on a target, and check `ok` after every op — adapt on failure, don't blindly continue.
+6. **Keep each chain COMPACT — co-locate, never scatter or relocate.** A furnace for a drill goes RIGHT NEXT TO that drill's output: `walkToEntity('<the drill>', 200)` → `renderMap` centred ON it → `placeAt` the furnace covering its output tile. NEVER place the furnace on a separate/far ore patch (a furnace 50 tiles from its drill = the drill stays `waiting_for_space`, produces nothing, and you waste minutes walking — the #1 mistake). Put any NEW machine NEXT TO the existing factory (renderMap around your current machines first), not across the map. NEVER mine or re-place a machine that already exists — fix it in place; do not relocate.
 
 ## Reading the map — `await ops.renderMap(radius?, center?)` (this is your eyes)
 
@@ -35,15 +36,20 @@ How to read it:
 - **Footprints are drawn to scale**: a `DD`/`DD` block (2×2) is one burner-mining-drill; `FF`/`FF` is one furnace. A 2×2 machine you place at `(x,y)` fills `(x,y),(x+1,y),(x,y+1),(x+1,y+1)`. Belts/inserters/poles/chests are 1×1.
 - Use it to find **free tiles** (`.`), the **edge of an ore patch**, **water shores** (`~`), and to check **alignment/adjacency** before and after placing.
 
-To place something: render the map, find a suitable `.` tile (clear of machines/water/cliffs), read its exact (x,y) from the border, then `placeAt(name, { x, y, direction })`. Re-render to confirm.
+To place something: take the (x,y) from DATA — `getState().position` for the tile you stand on, `scan()` for an existing machine's tile — pick a spot clear of machines/water/cliffs and within ~8 tiles of `@`, then `placeAt(name, { x, y, direction })`; re-render to confirm. The grid is to SEE free space, footprints and adjacency — NOT to read exact numbers off the ruler (that's the #1 mis-placement cause).
 
 ## Placement geometry you must apply yourself (the map shows you, you decide)
 
 - **A burner-mining-drill must sit ON an ore patch** (its footprint over `i`/`c`/`k`/`s` cells) and **outputs onto the single tile just outside its footprint in its `direction`**. So a 2×2 drill at (x,y) facing `south` drops onto tile (x, y+2)…(x+1, y+2) area — keep that tile FREE for a furnace/belt/chest.
-- **To feed a furnace hands-free**: place the 2×2 furnace so it COVERS the drill's output tile (read the drill's footprint + facing off the map, then place the furnace on the tile right past it). Re-render: the furnace should touch the drill on the output side.
+- **To feed a furnace hands-free**: first `walkToEntity` to THAT specific drill and `renderMap` centred on it; then place the 2×2 furnace so it COVERS the drill's output tile (read the drill's footprint + facing off the map, place the furnace on the tile right past it). Re-render: the furnace MUST touch the drill on its output side. Do NOT walk to a different ore patch and drop a furnace there — it must be adjacent to its drill or the drill never gets fed.
 - **A transport-belt's `direction` is where items move.** Lay a line by `placeAt`-ing a belt on each consecutive tile, all facing along the line; turn the facing at a corner.
 - **A burner-inserter takes from the tile BEHIND it and drops on the tile in FRONT (its `direction`).** To move items from a furnace onto a belt: place the inserter on a tile adjacent to the furnace, facing the belt. Burner-inserters need coal.
-- **Electricity**: `offshore-pump` on a water `~` shore (facing land) → `boiler` adjacent (fuel with coal) → `steam-engine` adjacent to the boiler → `small-electric-pole` within a few tiles to carry power to machines. Find water with `await ops.findNearest('water')`, then render around it.
+- **Electricity (steam power) — use the `buildSteamPower()` helper; do NOT hand-place the chain.** The pump→boiler→steam-engine fluid faces are a FIXED mechanism with one correct solution (not a layout you read off the map), so the mod assembles + verifies it for you. Steps:
+  1. Hold the items: 1 `offshore-pump`, 1 `boiler`, 1 `steam-engine`, some `coal` (≈10), and ideally a `small-electric-pole` (`craftItem` / `craftPlan` whatever you lack first).
+  2. Get NEXT TO water: `const w = await ops.findNearest('water')` then `await ops.walkTo(w.x, w.y)` (water is a TILE — you stop on land at the shore).
+  3. `const r = await ops.buildSteamPower()`. It places + fluid-connects the whole chain, fuels the boiler, and wires a pole if you have one. On success `r.ok` is true and `r.pump/boiler/engine` give the coords+status.
+  4. If `r.ok` is false, READ `r.error`: `missing items …` → craft them; `no water within 40 tiles` / `no placeable offshore-pump spot` → `walkTo` a cleaner, straighter shore and call it again; `no boiler position connected …` → the shore is too cramped, move along the coast and retry. Do NOT fall back to hand-placing — call the helper again from a better spot.
+- **Automate an intermediate (gears / circuits) with an assembler — ONLY after you have electricity** (an `assembling-machine-1` is electric and idle until it has a recipe + power). Steps: `placeAt('assembling-machine-1', …)` NEXT TO its input source and within reach of a powered electric pole → walk to it → `await ops.setRecipe('iron-gear-wheel')` (or 'electronic-circuit') → feed its input by `placeAt`-ing an inserter that takes from the plate chest/furnace and drops INTO the assembler, and pull the output with another inserter. This REPLACES hand-crafting that intermediate every time.
 
 ## VERIFY then FIX
 
@@ -76,9 +82,12 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 **Actions**
 - `await ops.placeAt(name, { x, y, direction })` — place ONE entity at the EXACT tile, `direction` ∈ `'north'|'east'|'south'|'west'`. The ONLY placement op. **Only reaches ~10 tiles from your character** — `walkToEntity` into the area FIRST, then `renderMap` centred there and pass coords from it. `{ok:false,error}` if the tile is blocked or out of reach — walk closer / pick another.
 - `await ops.walkToEntity(name, 200)` — walk to the nearest matching entity (use a big radius). Do this before mining/placing/transferring on it.
+- `await ops.walkTo(x, y)` — walk to an arbitrary TILE (the only way to reach a spot with no entity, e.g. a water shore). You stop within reach of it. Use it after `findNearest('water')` to reach the shore before placing an offshore-pump, or to travel to a far coordinate before building there.
 - `await ops.mineEntity(name, count?)` — mine `count` of the nearest matching resource/entity (must be within ~5 tiles — walk first). Use it to mine ore, coal, stone, trees (wood), or to PICK UP a machine you misplaced.
 - `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity (~8 tiles). `toEntity:true` inserts INTO it (fuel/ingredients), `false` takes FROM it (collect plates/output).
 - `await ops.craftItem(recipe, count?)` — hand-craft (recipe unlocked AND ingredients already held; does NOT auto-craft prerequisites).
+- `await ops.setRecipe(recipe)` — set the recipe of the nearest assembling-machine so it AUTO-crafts that item (it does nothing without a recipe AND electricity). e.g. after `placeAt('assembling-machine-1', …)` and walking to it: `await ops.setRecipe('iron-gear-wheel')`.
+- `await ops.buildSteamPower()` — ONE-CALL steam power: places + fluid-connects offshore-pump→boiler→steam-engine, fuels the boiler, wires a pole. Walk NEXT TO water first and hold the items. Returns `{ ok, error?, pump, boiler, engine, … }`. Use this for electricity instead of hand-placing the chain.
 - `await ops.researchTechnology(name)` — start researching (needs a powered lab + science packs).
 - `await ops.wait(ticks)` — wait N ticks (60≈1s). Use after fueling to let smelting happen.
 - `await ops.attackNearestEnemy(radius?)` — shoot the nearest enemy (needs gun+ammo).

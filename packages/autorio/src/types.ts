@@ -44,6 +44,8 @@ export interface PlayerParametersWalkToEntity {
   // candidate so an unreachable nearest patch (e.g. across water) doesn't deadlock the walk.
   candidates?: MapPositionStruct[]
   candidate_index?: number
+  // Set by walk_to_position: head straight to this tile (single candidate), no entity search.
+  goal_position?: MapPositionStruct
 }
 
 export interface PlayerParametersWalkingDirect {

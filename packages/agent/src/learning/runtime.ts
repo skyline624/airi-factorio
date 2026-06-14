@@ -1,5 +1,5 @@
 import type { SettleBus } from './settle-bus'
-import type { CraftPlan, EntityInfo, GameState, MapView, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, TechInfo } from './types'
+import type { CraftPlan, EntityInfo, GameState, MapView, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, SteamPowerResult, TechInfo } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
 import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
@@ -33,7 +33,7 @@ export function luaArg(value: unknown): string {
 // Operations that enqueue a task and therefore emit a settle signal when done.
 // `research_technology` does NOT enqueue a task (it would never settle), and
 // `craft_item` only settles when it returns success (it can reject synchronously).
-const SETTLING_OPS = new Set(['walk_to_entity', 'mine_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
+const SETTLING_OPS = new Set(['walk_to_entity', 'walk_to_position', 'mine_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
 
 export interface OpsDeps {
   /** Send a full `/c ...` console command and resolve with the rcon output. */
@@ -183,6 +183,7 @@ export function createOps(deps: OpsDeps): Ops {
       return (d && typeof d === 'object' && Array.isArray(d.grid)) ? d : null
     },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
+    walkTo: (x, y) => runOp('walk_to_position', [x, y]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
     placeAt: (entityName, at) => {
       // No silent default to (0,0): the model MUST pass explicit coordinates read off
@@ -194,6 +195,16 @@ export function createOps(deps: OpsDeps): Ops {
     },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
+    setRecipe: async (recipe: string): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','set_recipe',${luaArg(recipe)})`))
+      return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'set_recipe failed' }
+    },
+    buildSteamPower: async (): Promise<SteamPowerResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<SteamPowerResult>(await deps.raw(`/c remote.call('autorio_tools','build_steam_power')`))
+      return (d && typeof d === 'object' && typeof d.ok === 'boolean') ? d : { ok: false, error: 'build_steam_power failed (no/invalid response)' }
+    },
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),
     wait: ticks => runOp('wait', [ticks]),
     attackNearestEnemy: (searchRadius = 50) => runOp('attack_nearest_enemy', [searchRadius]),
