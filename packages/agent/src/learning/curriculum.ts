@@ -9,6 +9,10 @@ export interface CurriculumInput {
   state: GameState
   /** Force-wide machine census (name/status/`mining`) — lets the curriculum SEE whether anything is automated yet. */
   factorySummary?: string
+  /** Ore/resource patches within scan range + distance ("iron-ore x842 near (-88,-76) d0 …") — so the curriculum knows what is REACHABLE and stops proposing "go find iron" when the agent is already standing on it. */
+  resourcesSummary?: string
+  /** ASCII map of the local area (centred on the player), so the PLANNER sees spatial reality — like a general reading a map — not just text. Lets it catch e.g. a drill whose output tile (X) isn't covered by a furnace (broken feed), overlaps, free space. */
+  mapView?: string
   /** Cumulative force production totals ("iron-plate: 62, …"). */
   productionSummary?: string
   skills: { name: string, description: string }[]
@@ -34,6 +38,13 @@ function buildMessage(input: CurriculumInput): string {
     '',
     'FACTORY (every machine the force has built + status; a drill line shows what it `mining`s — this is your automation ground truth):',
     input.factorySummary ?? '(no factory data)',
+    '',
+    'NEARBY RESOURCES (ore patches within scan range + distance from you; d0 means you are STANDING ON it — propose placing a drill HERE, do NOT propose going to find it again):',
+    input.resourcesSummary ?? '(no ore patches in scan range — an exploration objective is warranted)',
+    '',
+    'LOCAL MAP (ASCII, centred on you — READ IT like a general reads the battlefield before deciding):',
+    input.mapView ?? '(no map available)',
+    'Map-reading for objectives: an `X` is a drill OUTPUT tile that is NOT yet covered by a machine — if you see `D` with a nearby uncovered `X`, the drill is dropping ore on the GROUND (broken feed): propose ALIGNING a furnace/belt/chest onto that X, NOT collecting plates. A drill `D` whose output is covered by `F` is correctly feeding. Use the map to judge alignment, free space and what is actually built before proposing the next step.',
     '',
     `PRODUCTION TOTALS (cumulative, hand + machines): ${input.productionSummary ?? '(nothing produced yet)'}`,
   ]

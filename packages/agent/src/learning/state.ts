@@ -141,14 +141,23 @@ export function parseScan(output: string): ScanResult {
     for (const item of raw.entities as unknown[]) {
       if (item && typeof item === 'object') {
         const e = item as Record<string, unknown>
-        entities.push({
+        const ent: ScanEntity = {
           name: typeof e.name === 'string' ? e.name : 'unknown',
           type: typeof e.type === 'string' ? e.type : 'unknown',
           x: Number(e.x) || 0,
           y: Number(e.y) || 0,
           direction: typeof e.direction === 'string' ? e.direction : 'north',
           status: typeof e.status === 'string' ? e.status : 'n/a',
-        })
+        }
+        // Drills carry mining (the resource actually mined) + oreUnder (ore left in range).
+        // These were dropped before — so the curriculum/critic never saw what a drill mines.
+        if (typeof e.mining === 'string') {
+          ent.mining = e.mining
+        }
+        if (typeof e.oreUnder === 'number') {
+          ent.oreUnder = e.oreUnder
+        }
+        entities.push(ent)
       }
     }
   }

@@ -191,6 +191,21 @@ function place_connected(surface: LuaSurface, force: LuaForce, player: LuaPlayer
   return undefined
 }
 
+// Total minable resource amount in a drill's mining area — so the agent can tell a
+// DEPLETED drill (move on) from one that's merely mis-seated/off-patch (re-place it) or
+// fine (leave it). Without this, 'no_minable_resources' alone reads as "broken" and the
+// agent needlessly rebuilds drills that still sit on plenty of ore.
+function drill_ore_under(surface: LuaSurface, drill: LuaEntity): number {
+  const radius = drill.prototype.mining_drill_radius ?? 1
+  const p = drill.position
+  const area = { left_top: { x: p.x - radius, y: p.y - radius }, right_bottom: { x: p.x + radius, y: p.y + radius } }
+  let total = 0
+  for (const r of surface.find_entities_filtered({ area, type: 'resource' })) {
+    total = total + r.amount
+  }
+  return math.floor(total)
+}
+
 export function create_tools_remote_interface() {
   remote.add_interface('autorio_tools', {
     get_inventory_items: (player_id: number) => {
@@ -297,7 +312,7 @@ export function create_tools_remote_interface() {
       const r = math.min(radius > 0 ? radius : 32, 128)
       const surface = player.surface
 
-      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string }[] = []
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number }[] = []
       let n = 0
       for (const e of surface.find_entities_filtered({ position: player.position, radius: r })) {
         if (e.name === 'character') {
@@ -307,14 +322,20 @@ export function create_tools_remote_interface() {
           break
         }
         n += 1
-        entities.push({
+        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number } = {
           name: e.name,
           type: e.type,
           x: math.floor(e.position.x * 10) / 10,
           y: math.floor(e.position.y * 10) / 10,
           direction: name_from_direction(e.direction),
           status: status_name(e.status),
-        })
+        }
+        if (e.type === 'mining-drill') {
+          const mt = e.mining_target
+          rec.mining = mt !== undefined ? mt.name : 'nothing'
+          rec.oreUnder = drill_ore_under(surface, e)
+        }
+        entities.push(rec)
       }
 
       const resources: Record<string, { count: number, x: number, y: number }> = {}
@@ -344,14 +365,14 @@ export function create_tools_remote_interface() {
       }
       const surface = player.surface
       const producer_types = ['mining-drill', 'furnace', 'assembling-machine', 'lab', 'boiler', 'generator', 'pumpjack', 'chemical-plant', 'oil-refinery', 'rocket-silo']
-      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string }[] = []
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number }[] = []
       let n = 0
       for (const e of surface.find_entities_filtered({ force: player.force, type: producer_types })) {
         if (n >= 100) {
           break
         }
         n += 1
-        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string } = {
+        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number } = {
           name: e.name,
           type: e.type,
           x: math.floor(e.position.x * 10) / 10,
@@ -359,11 +380,12 @@ export function create_tools_remote_interface() {
           direction: name_from_direction(e.direction),
           status: status_name(e.status),
         }
-        // For drills, report the resource actually being mined so the critic can catch
-        // a drill seated on the WRONG resource (e.g. stone when the objective wanted iron).
+        // For drills, report the resource actually being mined (catch a drill on the WRONG
+        // resource) AND the ore left in its mining area (tell DEPLETED from mis-seated).
         if (e.type === 'mining-drill') {
           const mt = e.mining_target
           rec.mining = mt !== undefined ? mt.name : 'nothing'
+          rec.oreUnder = drill_ore_under(surface, e)
         }
         entities.push(rec)
       }
@@ -429,6 +451,41 @@ export function create_tools_remote_interface() {
       const player = game.connected_players[0]
       if (player !== undefined && player.character !== undefined) {
         put(player.position.x, player.position.y, '@')
+      }
+      // Each mining-drill's OUTPUT (drop) tile — the spatial info the model otherwise has to
+      // infer from the drill's facing. Mark it 'X' (only where no entity already sits) so the
+      // model SEES where to put a furnace/belt/chest to receive the ore, and return the tiles.
+      // Once a furnace is correctly placed over it, the 'F' wins and the 'X' disappears.
+      // The drop tile is usually ON the ore patch (the drill sits on ore), so 'X' must OVERRIDE
+      // the ore/terrain char to be visible — but NOT a machine already there (a furnace covering
+      // it = success, keep 'F'). So skip only when a built-entity char already occupies the tile.
+      const structure_chars: Record<string, boolean> = { D: true, F: true, L: true, B: true, E: true, P: true, A: true, n: true, '+': true, '=': true, H: true, '^': true, '>': true, v: true, '<': true, b: true, '@': true }
+      const drill_outputs: Array<{ x: number, y: number, furnace_at?: { x: number, y: number } }> = []
+      const dfo_force = game.forces.player
+      for (const e of surface.find_entities_filtered({ area, type: 'mining-drill', force: game.forces.player })) {
+        const dp = e.drop_position
+        const dtx = math.floor(dp.x)
+        const dty = math.floor(dp.y)
+        const dcol = dtx - ox
+        const drow = dty - oy
+        if (dcol >= 0 && dcol < w && drow >= 0 && drow < h) {
+          const occupied = overlay[`${dcol}_${drow}`]
+          if (occupied === undefined || !structure_chars[occupied]) {
+            overlay[`${dcol}_${drow}`] = 'X'
+          }
+          // Ready-to-use placeAt coord for a 2x2 furnace COVERING this output tile (placeAt
+          // centres a 2x2, so (cx,cy) covers tiles (cx-1,cy-1)..(cx,cy)). Try the 4 centres
+          // whose footprint covers the drop tile; keep the first that's actually placeable
+          // (i.e. doesn't collide with the drill). Mirrors pump_spots — the model placeAt's it.
+          let furnace_at: { x: number, y: number } | undefined
+          for (const c of [{ x: dtx + 1, y: dty + 1 }, { x: dtx, y: dty + 1 }, { x: dtx + 1, y: dty }, { x: dtx, y: dty }]) {
+            if (surface.can_place_entity({ name: 'stone-furnace', position: { x: c.x, y: c.y }, force: dfo_force, build_check_type: defines.build_check_type.manual })) {
+              furnace_at = c
+              break
+            }
+          }
+          drill_outputs.push({ x: dtx, y: dty, furnace_at })
+        }
       }
       // Valid offshore-pump placements — the non-visual constraint the model cannot read off
       // the grid. For each water tile, test can_place_entity in the 4 directions; mark a valid
@@ -496,8 +553,8 @@ export function create_tools_remote_interface() {
         // Each row prefixed with its EXACT y coordinate.
         lines[row + 1] = `${pad_left(`${oy + row}`, lw)} ${s}`
       }
-      const legend = 'ground=. water=~ cliff=# tree=T rock=* | ore: i=iron c=copper k=coal s=stone | D=drill F=furnace L=lab B=boiler E=steam-engine P=offshore-pump A=assembler n=inserter +=pole ==pipe H=chest | O=valid offshore-pump spot (see pump_spots) | belt ^>v< points where items move | @=you'
-      rcon.print(helpers.table_to_json({ ok: true, origin: { x: ox, y: oy }, w, h, note: 'Coords are EXACT: the top line lists x every 5 columns; each row starts with its y. The cell at column c / row r is world (origin.x+c, origin.y+r). Pass these REAL numbers to placeAt - never (0,0). pump_spots lists ready-to-use {x,y,direction} for an offshore-pump (placeAt them directly).', legend, grid: lines, pump_spots }))
+      const legend = 'ground=. water=~ cliff=# tree=T rock=* | ore: i=iron c=copper k=coal s=stone | D=drill F=furnace L=lab B=boiler E=steam-engine P=offshore-pump A=assembler n=inserter +=pole ==pipe H=chest | O=valid offshore-pump spot (see pump_spots) | X=a drill OUTPUT tile (place a furnace/belt/chest to COVER it; see drill_outputs) | belt ^>v< points where items move | @=you'
+      rcon.print(helpers.table_to_json({ ok: true, origin: { x: ox, y: oy }, w, h, note: 'Coords are EXACT: the top line lists x every 5 columns; each row starts with its y. The cell at column c / row r is world (origin.x+c, origin.y+r). Pass these REAL numbers to placeAt - never (0,0). pump_spots lists ready-to-use {x,y,direction} for an offshore-pump (placeAt them directly). drill_outputs lists each drill OUTPUT tile (X) with furnace_at = the ready placeAt coord for a stone-furnace covering it (placeAt it directly, like pump_spots).', legend, grid: lines, pump_spots, drill_outputs }))
       return true
     },
     // Locate the NEAREST thing of a given name well beyond scan range — the fix for

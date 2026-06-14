@@ -66,6 +66,20 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   // machines + status (NOT a player-centred scan, which misses the build whenever
   // the agent wandered off — e.g. to mine coal — before the run ended).
   const captureScan = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_factory\')'))
+  // Player-centred resource scan: the ore patches (and how far) actually within reach.
+  // The curriculum needs this to know what is REACHABLE — otherwise it can't tell the
+  // agent is already standing on iron and keeps proposing "go find iron" forever.
+  const captureResources = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 64)'))
+  // ASCII map centred on the player, given to the CURRICULUM so the planner sees spatial
+  // reality (a general reads the map) — it can then catch a broken drill->furnace feed (an
+  // uncovered `X`), overlaps, free space, etc., instead of mis-reading text status.
+  const captureMap = async (center?: { x: number, y: number }): Promise<string | undefined> => {
+    if (!center) {
+      return undefined
+    }
+    const d = extractLastJsonLine<{ grid?: string[], legend?: string }>(await deps.raw(`/c remote.call('autorio_tools','render_map',${Math.floor(center.x)},${Math.floor(center.y)},18)`))
+    return (d && Array.isArray(d.grid)) ? `${d.legend ?? ''}\n${d.grid.join('\n')}` : undefined
+  }
   // Force-wide production counters: what was MADE (hand or machine). The critic gets
   // the per-objective delta; the curriculum gets the totals (is anything automated yet?).
   const captureProduction = async (): Promise<Record<string, number> | null> => {
@@ -187,6 +201,15 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           // and the production totals — without these it can't tell that nothing is
           // automated yet, and keeps proposing manual-grind stockpile objectives.
           const factorySummary = summarizeScan(await captureScan())
+          // What ore is within reach right now (+ distance), so the curriculum advances to
+          // "place the drill here" instead of re-proposing "find iron" while standing on it.
+          const resScan = await captureResources()
+          const ro = resScan.origin ?? { x: 0, y: 0 }
+          const resourcesSummary = Object.entries(resScan.resources)
+            .map(([name, r]) => `${name} x${r.count} near (${r.x},${r.y}) d${Math.round(Math.hypot(r.x - ro.x, r.y - ro.y))}`)
+            .join(' | ') || undefined
+          // The local ASCII map for the planner (centred on the player).
+          const mapView = await captureMap(state.position)
           const production = await captureProduction()
           const productionSummary = production
             ? Object.entries(production).filter(([, c]) => c > 0).map(([item, c]) => `${item}: ${c}`).join(', ') || undefined
@@ -201,6 +224,8 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
               ultimateGoal: deps.ultimateGoal,
               state,
               factorySummary,
+              resourcesSummary,
+              mapView,
               productionSummary,
               skills: library.summary(),
               completed,

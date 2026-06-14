@@ -57,7 +57,8 @@ export function summarizeScan(scan: ScanResult): string {
   if (scan.entities.length) {
     for (const e of scan.entities.slice(0, 40)) {
       const mining = e.mining ? ` mining ${e.mining}` : ''
-      lines.push(`  - ${e.name} @(${e.x}, ${e.y}) facing ${e.direction} [${e.status}]${mining}`)
+      const ore = typeof e.oreUnder === 'number' ? ` ore-left≈${e.oreUnder}` : ''
+      lines.push(`  - ${e.name} @(${e.x}, ${e.y}) facing ${e.direction} [${e.status}]${mining}${ore}`)
     }
     if (scan.entities.length > 40) {
       lines.push(`  - … +${scan.entities.length - 40} more entities`)

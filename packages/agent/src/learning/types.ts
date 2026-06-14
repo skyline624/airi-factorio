@@ -59,6 +59,8 @@ export interface ScanEntity {
   status: string
   /** mining drills only: the resource actually being mined ('iron-ore', 'stone', …) or 'nothing'. Lets you catch a drill seated on the WRONG resource. */
   mining?: string
+  /** mining drills only: total ore left in the drill's mining area. 0 = depleted (move on); a high number with status 'no_minable_resources' = the drill is mis-seated/off-patch, re-place it rather than rebuild. */
+  oreUnder?: number
 }
 
 /** Result of `ops.scan(radius)`: a structured local map for spatial reasoning + automation checks. */
@@ -157,6 +159,8 @@ export interface MapView {
   grid: string[]
   /** Ready-to-use offshore-pump placements (the non-visual water-edge validity, computed by the mod). placeAt one directly. */
   pump_spots?: Array<{ x: number, y: number, direction: string }>
+  /** Each mining-drill's OUTPUT (drop) tile, marked 'X' on the grid (place a furnace/belt/chest to COVER it). `furnace_at` is the ready, can-place-verified placeAt coord for a 2x2 stone-furnace covering it — placeAt it directly (like pump_spots). */
+  drill_outputs?: Array<{ x: number, y: number, furnace_at?: { x: number, y: number } }>
 }
 
 /**
@@ -190,7 +194,7 @@ export interface Ops {
   /** Walk to an arbitrary tile (x,y) — the ONLY way to reach a spot with no entity, e.g. a water shore for an offshore-pump (water is a tile, walkToEntity can't target it). The character stops within reach. */
   walkTo: (x: number, y: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
-  /** Place ONE entity at EXACT tile coords (no snapping). This is the ONLY placement op — there are no auto-placement helpers. Read the target tile + a free orientation off `renderMap` and pass the exact numbers; a 2x2 machine (drill/furnace/assembler) occupies the tile at (x,y) and the 3 tiles +1 right/down. */
+  /** Place ONE entity at EXACT coords (no snapping). The ONLY placement op. (x,y) is the machine's CENTER: a 2x2 (drill/furnace/assembler) covers the four tiles UP-and-LEFT of (x,y) — (x-1,y-1)..(x,y) — so to COVER a target tile T pass (T.x+1, T.y+1). 1x1 entities sit on their own tile. Read coords off `renderMap` (or use ready coords like pump_spots / drill_outputs.furnace_at). */
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>

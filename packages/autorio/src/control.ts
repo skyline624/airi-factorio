@@ -523,6 +523,17 @@ function setup() {
   log('[AUTORIO] Setup complete')
 }
 
+// Keep the world a PEACEFUL sandbox as it is explored: setup() only clears enemies in the
+// chunks that exist at startup (the spawn area), so newly-generated chunks (revealed while
+// the agent walks to far ore) still spawn biters/spawners — and the agent gets killed at the
+// very deposits it must reach. Wipe enemies in each chunk the moment it generates.
+script.on_event(defines.events.on_chunk_generated, (event) => {
+  const enemies = event.surface.find_entities_filtered({ force: 'enemy', area: event.area })
+  for (const enemy of enemies) {
+    enemy.destroy()
+  }
+})
+
 function draw_path(player: LuaPlayer, path: PathfinderWaypoint[]) {
   for (let i = 0; i < path.length - 1; i++) {
     rendering.draw_line({
