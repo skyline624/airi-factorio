@@ -74,7 +74,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.productionStats()` → `{produced, consumed}` cumulative counters — proof of real output.
 
 **Actions**
-- `await ops.placeAt(name, { x, y, direction })` — place ONE entity at the EXACT tile, `direction` ∈ `'north'|'east'|'south'|'west'`. The ONLY placement op. Read x,y off renderMap. `{ok:false,error}` if the tile is blocked — render again, pick another.
+- `await ops.placeAt(name, { x, y, direction })` — place ONE entity at the EXACT tile, `direction` ∈ `'north'|'east'|'south'|'west'`. The ONLY placement op. **Only reaches ~10 tiles from your character** — `walkToEntity` into the area FIRST, then `renderMap` centred there and pass coords from it. `{ok:false,error}` if the tile is blocked or out of reach — walk closer / pick another.
 - `await ops.walkToEntity(name, 200)` — walk to the nearest matching entity (use a big radius). Do this before mining/placing/transferring on it.
 - `await ops.mineEntity(name, count?)` — mine `count` of the nearest matching resource/entity (must be within ~5 tiles — walk first). Use it to mine ore, coal, stone, trees (wood), or to PICK UP a machine you misplaced.
 - `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity (~8 tiles). `toEntity:true` inserts INTO it (fuel/ingredients), `false` takes FROM it (collect plates/output).

@@ -1060,6 +1060,20 @@ function state_placing_at(player: LuaPlayer) {
   }
 
   const position = { x: params.x, y: params.y }
+  // Reach guard: a player can only build within ~build_distance. Without this the agent drops
+  // machines far away (then can't fuel/reach them) instead of walking there first. The manual
+  // build check below also rejects placing ON the character (the minimum-distance case).
+  const reach_dx = position.x - player.position.x
+  const reach_dy = position.y - player.position.y
+  const reach_dist = math.sqrt(reach_dx * reach_dx + reach_dy * reach_dy)
+  const max_reach = player.build_distance + 2
+  if (reach_dist > max_reach) {
+    log(`[AUTORIO] [ERROR] Cannot place ${params.entity_name} at (${params.x},${params.y}): ${math.floor(reach_dist)} tiles away, beyond build reach ~${max_reach} — walk closer first (walkToEntity)`)
+    task_manager.reset_task_state()
+    task_manager.next_task()
+    return [false, 'Target out of build reach; walk closer first']
+  }
+
   const can_place = surface.can_place_entity({
     name: params.entity_name,
     position,
