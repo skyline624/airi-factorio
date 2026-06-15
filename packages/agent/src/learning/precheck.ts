@@ -32,12 +32,12 @@ export interface PrecheckResult {
 }
 
 // Verbs whose outcome is reliably reflected in a concrete state delta.
-const ACQUIRE_RE = /\b(mine|mined|mining|collect|gather|gathered|harvest|craft|crafted|make|made|smelt|produce|obtain|accumulate|stockpile)\b/
-const BUILD_RE = /\b(build|built|place|placed|construct|deploy|lay)\b/
+const ACQUIRE_RE = /\b(?:mine|mined|mining|collect|gather|gathered|harvest|craft|crafted|make|made|smelt|produce|obtain|accumulate|stockpile)\b/
+const BUILD_RE = /\b(?:build|built|place|placed|construct|deploy|lay)\b/
 const RESEARCH_RE = /\bresearch(?:ed|ing)?\b/
 // Status-laden words mean a machine STATUS judgement is needed (working / powered /
 // fed) — never decide those in code even if a build/acquire verb is also present.
-const STATUS_RE = /\b(automate|automated|automating|working|powered|electricity|feeds?|feeding|running|online)\b/
+const STATUS_RE = /\b(?:automate|automated|automating|working|powered|electricity|feeds?|feeding|running|online)\b/
 
 /** Lowercased, hyphen→space, punctuation-stripped form for substring matching against diff keys. */
 function normalize(text: string): string {

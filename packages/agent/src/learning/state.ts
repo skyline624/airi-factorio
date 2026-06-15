@@ -10,7 +10,7 @@ import { extractLastJsonLine } from './json'
 // against a `'`, `\`, or newline/CR sneaking in via env vars (a bare newline or
 // CR would otherwise break the single-line `/c` command).
 function luaString(value: string): string {
-  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, '\\\'').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`
 }
 
 export function buildPlayerResolveSnippet(playerName: string): string {

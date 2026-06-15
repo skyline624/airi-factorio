@@ -22,7 +22,7 @@ describe('precheckVerdict', () => {
     const r = precheckVerdict({
       objective: 'Mine 20 iron ore',
       before: state({ inventory: { 'iron-ore': 0 } }),
-      after: state({ inventory: { 'iron-ore': 5, stone: 3 } }),
+      after: state({ inventory: { 'iron-ore': 5, 'stone': 3 } }),
     })
     // Something changed (so not a clean no-op) but the target is unmet -> defer to the LLM.
     expect(r.decided).toBe(false)
