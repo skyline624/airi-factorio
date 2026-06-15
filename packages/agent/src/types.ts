@@ -51,6 +51,8 @@ export interface LearningConfig {
   maxOpsPerSkill: number
   /** Max code-gen attempts per objective (Voyager iterative prompting). */
   maxRetries: number
+  /** When true, settle mechanical objectives (mine/build/research) in code, skipping the critic-LLM round-trip. */
+  deterministicCritic: boolean
 }
 
 export interface AiriConfig {

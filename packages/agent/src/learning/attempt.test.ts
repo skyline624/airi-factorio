@@ -42,6 +42,9 @@ const base = {
   actionModel: 'a',
   criticModel: 'c',
   sandboxTimeoutMs: 5000,
+  // These tests exercise the LLM-critic path (threading/retry/give-up), so opt out
+  // of the deterministic pre-critic; its own short-circuit is covered separately below.
+  deterministicCritic: false as const,
 }
 
 const CODE = 'async function f(state, ops) { await ops.mineEntity("coal", 5) }'
@@ -85,6 +88,18 @@ describe('attemptObjective', () => {
     const r = await attemptObjective('x', '', { ...base, generateCode, verify, maxRetries: 2 })
     expect(r.success).toBe(false)
     // verify is never called when there is no code to run
+    expect(verify).not.toHaveBeenCalled()
+  })
+
+  it('settles a mechanical objective via the deterministic pre-critic (no LLM critic call)', async () => {
+    // before = {}, after = { coal: 5 } -> "mine 5 coal" passes in code, verify must NOT run.
+    let n = 0
+    const captureState = async (): Promise<GameState> => (n++ === 0 ? state : { tick: 1, inventory: { coal: 5 }, entities: {} })
+    const generateCode = async () => ({ code: CODE, raw: '' })
+    const verify = vi.fn(async (): Promise<Verdict> => ({ success: false, critique: 'should not be called' }))
+    const r = await attemptObjective('mine 5 coal', '', { ...base, deterministicCritic: true, captureState, generateCode, verify })
+    expect(r.success).toBe(true)
+    expect(r.attempts).toBe(1)
     expect(verify).not.toHaveBeenCalled()
   })
 })

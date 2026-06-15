@@ -41,6 +41,8 @@ export interface LearningSessionDeps {
   settleTimeoutMs: number
   maxOpsPerSkill: number
   maxRetries: number
+  /** When true (default), the deterministic pre-critic settles mechanical objectives without an LLM call. */
+  deterministicCritic?: boolean
 }
 
 export interface LearningController {
@@ -140,6 +142,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       criticModel: deps.criticModel,
       sandboxTimeoutMs: deps.sandboxTimeoutMs,
       maxRetries: deps.maxRetries,
+      deterministicCritic: deps.deterministicCritic,
       log: message => logger.log(message),
     })
 

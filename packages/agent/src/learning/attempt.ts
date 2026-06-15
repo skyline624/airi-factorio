@@ -2,6 +2,7 @@ import type { GenerateCodeInput, GeneratedCode, RetrievedSkill } from './action'
 import type { VerifyOptions } from './critic'
 import type { GameState, Ops, ScanResult, Verdict } from './types'
 import { summarizeScan } from './action'
+import { precheckVerdict } from './precheck'
 import { runSkill } from './runtime'
 import { diffState } from './state'
 
@@ -23,6 +24,8 @@ export interface AttemptDeps {
   sandboxTimeoutMs: number
   maxRetries?: number
   skills?: RetrievedSkill[]
+  /** When false, skip the deterministic pre-critic and always ask the LLM critic. Default: enabled. */
+  deterministicCritic?: boolean
   log?: (message: string) => void
 }
 
@@ -118,7 +121,16 @@ export async function attemptObjective(objective: string, context: string, deps:
     const scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
     const prodAfter = deps.captureProduction ? await deps.captureProduction() : null
     const productionSummary = summarizeProductionDelta(prodBefore, prodAfter)
-    const verdict = await deps.verify({ objective, before, after, logs, scanSummary, productionSummary, model: deps.criticModel })
+
+    // Deterministic pre-critic: settle the mechanical objectives (mine/build/research)
+    // in code, skipping the critic-LLM round-trip. Ambiguous ones fall through to the LLM.
+    const pre = deps.deterministicCritic === false ? { decided: false as const } : precheckVerdict({ objective, before, after, prodBefore, prodAfter })
+    const verdict: Verdict = pre.decided
+      ? { success: pre.success ?? false, critique: pre.critique ?? '', reasoning: pre.reasoning }
+      : await deps.verify({ objective, before, after, logs, scanSummary, productionSummary, model: deps.criticModel })
+    if (pre.decided) {
+      deps.log?.(`  -> precheck ${verdict.success ? 'PASS' : 'FAIL'} (no critic LLM): ${pre.reasoning ?? ''}`)
+    }
     lastVerdict = verdict
 
     if (verdict.success) {

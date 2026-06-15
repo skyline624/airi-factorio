@@ -60,6 +60,7 @@ export const learningConfig: LearningConfig = {
   settleTimeoutMs: 60_000,
   maxOpsPerSkill: 200,
   maxRetries: 4,
+  deterministicCritic: true,
 }
 
 export function initEnv() {
@@ -122,6 +123,9 @@ export function initEnv() {
   learningConfig.settleTimeoutMs = Number.parseInt(env.LEARNING_SETTLE_TIMEOUT_MS || '60000')
   learningConfig.maxOpsPerSkill = Number.parseInt(env.LEARNING_MAX_OPS || '200')
   learningConfig.maxRetries = Number.parseInt(env.LEARNING_MAX_RETRIES || '4')
+  // Settle mechanical objectives (mine/build/research) in code, skipping the critic-LLM
+  // round-trip. Defaults on; set LEARNING_DETERMINISTIC_CRITIC=false to always use the LLM.
+  learningConfig.deterministicCritic = (env.LEARNING_DETERMINISTIC_CRITIC || 'true').trim().toLowerCase() !== 'false'
 
   logger.withFields({ openaiConfig, factorioConfig, debugConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
 }
