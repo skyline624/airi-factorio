@@ -19,6 +19,8 @@ export interface GenerateCodeInput {
   prevCode?: string | null
   lastError?: string | null
   lastCritique?: string | null
+  /** Static-analysis smells about the previous attempt (blind placement, missing await). */
+  hints?: string[] | null
   /** What has already been achieved toward the objective (banked across retries). */
   progress?: string | null
   /** A compact spatial map (from ops.scan) so the LLM can place at exact coordinates. */
@@ -127,6 +129,9 @@ function buildUserMessage(input: GenerateCodeInput): string {
     }
     if (input.lastCritique) {
       lines.push(`VERIFIER FEEDBACK: ${input.lastCritique}`)
+    }
+    if (input.hints && input.hints.length) {
+      lines.push(`STATIC CHECKS: ${input.hints.join(' ')}`)
     }
   }
 

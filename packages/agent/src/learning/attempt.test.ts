@@ -91,6 +91,22 @@ describe('attemptObjective', () => {
     expect(verify).not.toHaveBeenCalled()
   })
 
+  it('bounces sandbox-forbidden code before running, threading the reason to the retry', async () => {
+    const inputs: GenerateCodeInput[] = []
+    const generateCode = async (input: GenerateCodeInput) => {
+      inputs.push(input)
+      // First attempt uses a forbidden global; second is clean so it can pass the critic.
+      return { code: inputs.length === 1 ? 'async function f(s, o){ require("fs") }' : CODE, raw: '' }
+    }
+    const verify = vi.fn(async (): Promise<Verdict> => ({ success: true, critique: '' }))
+    const r = await attemptObjective('mine coal', '', { ...base, generateCode, verify, maxRetries: 2 })
+    expect(r.success).toBe(true)
+    expect(r.attempts).toBe(2)
+    // verify ran only for the second (clean) attempt — the first was rejected before running.
+    expect(verify).toHaveBeenCalledTimes(1)
+    expect(inputs[1]?.lastError).toContain('sandbox')
+  })
+
   it('settles a mechanical objective via the deterministic pre-critic (no LLM critic call)', async () => {
     // before = {}, after = { coal: 5 } -> "mine 5 coal" passes in code, verify must NOT run.
     let n = 0

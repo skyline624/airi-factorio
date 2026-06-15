@@ -3,6 +3,7 @@ import type { VerifyOptions } from './critic'
 import type { BatchedCapture } from './state'
 import type { GameState, Ops, ScanResult, Verdict } from './types'
 import { summarizeScan } from './action'
+import { lintSkillCode } from './lint'
 import { precheckVerdict } from './precheck'
 import { runSkill } from './runtime'
 import { diffState } from './state'
@@ -81,6 +82,7 @@ export async function attemptObjective(objective: string, context: string, deps:
   let prevCode: string | null = null
   let lastError: string | null = null
   let lastCritique: string | null = null
+  let lastHints: string[] | null = null
   let lastVerdict: Verdict | undefined
   let logs: string[] = []
   let code: string | null = null
@@ -103,6 +105,7 @@ export async function attemptObjective(objective: string, context: string, deps:
       prevCode,
       lastError,
       lastCritique,
+      hints: lastHints,
       progress: attempt === 1 ? null : diffState(before, current),
       localMap,
       model: deps.actionModel,
@@ -113,6 +116,19 @@ export async function attemptObjective(objective: string, context: string, deps:
     if (!code) {
       lastError = 'No runnable async function could be extracted. Return a ```js block defining `async function name(state, ops)`.'
       deps.log?.('  -> no code extracted; retrying')
+      continue
+    }
+
+    // Cheap static pass before the expensive sandbox run: a sandbox-forbidden global is a
+    // definite defect — re-prompt immediately instead of wasting a run. Soft hints (blind
+    // placement, missing await) are only surfaced if this attempt then fails.
+    const lint = lintSkillCode(code)
+    if (lint.hardError) {
+      prevCode = code
+      lastError = lint.hardError
+      lastCritique = null
+      lastHints = null
+      deps.log?.(`  -> static check rejected the code (no run): ${lint.hardError}`)
       continue
     }
 
@@ -158,6 +174,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     prevCode = code
     lastError = result.ok ? null : (result.error ?? null)
     lastCritique = verdict.critique
+    // Surface the static smells (blind placement / missing await) to the next attempt.
+    lastHints = lint.hints.length ? lint.hints : null
     deps.log?.(`  -> not yet: ${verdict.critique || result.error || 'unknown'}`)
   }
 
