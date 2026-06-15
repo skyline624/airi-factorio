@@ -78,11 +78,11 @@ describe('parseOperationCompletedMessage', () => {
 
 describe('parseModResultMessage', () => {
   it('parses a structured [RESULT] line into data', () => {
-    const log = `51.889 Script @__autorio__/control.lua:1146: [AUTORIO] [RESULT] {"op":"place","name":"stone-furnace","x":53,"y":-15,"status":"no_fuel","direction":"north"}`
+    const log = `51.889 Script @__autorio__/control.lua:1146: [AUTORIO] [RESULT] {"op":"place","name":"stone-furnace","x":53,"y":-15,"status":"no_fuel"}`
     expect(parseModResultMessage(log)).toEqual({
       type: 'modResult',
       serverTimestamp: '51.889',
-      data: { op: 'place', name: 'stone-furnace', x: 53, y: -15, status: 'no_fuel', direction: 'north' },
+      data: { op: 'place', name: 'stone-furnace', x: 53, y: -15, status: 'no_fuel' },
     })
   })
 

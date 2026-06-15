@@ -1,4 +1,5 @@
 import type { LuaEntity, LuaForce, LuaPlayer, LuaSurface, MapPosition } from 'factorio:runtime'
+import { direction_from_name } from './utils/direction'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
@@ -207,8 +208,61 @@ function drill_ore_under(surface: LuaSurface, drill: LuaEntity): number {
   return math.floor(total)
 }
 
+// Validated placeAt tiles for `entity_name` near (cx,cy), so the model picks WHERE to
+// place by intent instead of reading exact coords off the ASCII ruler (the #1 mis-place
+// cause). Uses can_place_entity — the SAME check placeAt runs — as ground truth, so any
+// returned tile IS placeable. The candidate alignment follows Factorio's parity rule
+// (even footprint -> integer position, odd -> tile centre). Degrades to an empty list,
+// so a miss is never worse than today (the model falls back to reading the map).
+export function find_placeable_spots(surface: LuaSurface, force: LuaForce, entity_name: string, cx: number, cy: number, radius: number, dir: defines.direction, limit: number): Array<{ x: number, y: number }> {
+  const proto = prototypes.entity[entity_name]
+  if (!proto) {
+    return []
+  }
+  const r = math.min(radius > 0 ? radius : 8, 12)
+  const xoff = (proto.tile_width % 2 === 0) ? 0 : 0.5
+  const yoff = (proto.tile_height % 2 === 0) ? 0 : 0.5
+  const bx = math.floor(cx)
+  const by = math.floor(cy)
+  const cands: Array<{ x: number, y: number, d: number }> = []
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const x = bx + dx + xoff
+      const y = by + dy + yoff
+      if (surface.can_place_entity({ name: entity_name, position: { x, y }, direction: dir, force, build_check_type: defines.build_check_type.manual })) {
+        cands.push({ x, y, d: dx * dx + dy * dy })
+      }
+    }
+  }
+  cands.sort((a, b) => a.d - b.d)
+  const out: Array<{ x: number, y: number }> = []
+  for (let i = 0; i < cands.length && i < limit; i++) {
+    out.push({ x: cands[i].x, y: cands[i].y })
+  }
+  return out
+}
+
 export function create_tools_remote_interface() {
   remote.add_interface('autorio_tools', {
+    // Validated placeAt tiles for `entity_name` near (cx,cy) (defaults to the player) — the
+    // model picks one by intent instead of reading exact coords off the map ruler. Returns
+    // { spots:[{x,y}] } nearest-first (<=12); empty if none are placeable in range.
+    placement_spots: (entity_name: string, cx: number | undefined, cy: number | undefined, radius: number, direction_name: string | undefined) => {
+      const surface = game.surfaces[1]
+      const force = game.forces.player
+      if (!prototypes.entity[entity_name]) {
+        return { spots: [], error: `unknown entity: ${entity_name}` }
+      }
+      let ccx = cx
+      let ccy = cy
+      if (ccx === undefined || ccy === undefined) {
+        const pl = game.connected_players[0]
+        ccx = pl !== undefined ? pl.position.x : 0
+        ccy = pl !== undefined ? pl.position.y : 0
+      }
+      const dir = direction_from_name(direction_name ?? 'north')
+      return { spots: find_placeable_spots(surface, force, entity_name, ccx, ccy, radius, dir, 12) }
+    },
     get_inventory_items: (player_id: number) => {
       rcon.print(serpent.block(get_inventory_items(player_id)))
       return true

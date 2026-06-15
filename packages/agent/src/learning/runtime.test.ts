@@ -131,6 +131,22 @@ describe('createOps', () => {
     expect(res.resources['iron-ore']?.count).toBe(842)
   })
 
+  it('placementSpots parses the spots list and passes name/center/direction in the call', async () => {
+    const raw = vi.fn(async () => '{"spots":[{"x":53,"y":-15},{"x":54,"y":-15}]}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const r = await ops.placementSpots('stone-furnace', { x: 53, y: -14 }, 6, 'north')
+    expect(r.spots).toEqual([{ x: 53, y: -15 }, { x: 54, y: -15 }])
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'placement_spots','stone-furnace',53,-14,6,'north'`))
+  })
+
+  it('placementSpots defaults the center to nil (player position) and is empty on junk', async () => {
+    const raw = vi.fn(async () => 'not json')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const r = await ops.placementSpots('stone-furnace')
+    expect(r.spots).toEqual([])
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'placement_spots','stone-furnace',nil,nil,8,'north'`))
+  })
+
   it('reports a clear error when ops.skill is called before the library is wired', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
@@ -195,6 +211,7 @@ function makeMockOps(): Ops {
     getRecipe: async () => null,
     describeEntity: async () => null,
     findNearest: async () => null,
+    placementSpots: async () => ({ spots: [] }),
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],

@@ -29,6 +29,7 @@ function mockOps(): Ops {
     getRecipe: async () => null,
     describeEntity: async () => null,
     findNearest: async () => null,
+    placementSpots: async () => ({ spots: [] }),
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],
@@ -77,7 +78,10 @@ describe('attemptObjective', () => {
   it('reuses the post-run scan as the next attempt local map (skips the retry pre-scan)', async () => {
     const captureScan = vi.fn(async () => ({ entities: [{ name: 'stone-furnace', type: 'furnace', x: 0, y: 0, direction: 'north', status: 'no_fuel' }], resources: {} }))
     const localMaps: Array<string | null | undefined> = []
-    const generateCode = async (input: GenerateCodeInput) => { localMaps.push(input.localMap); return { code: CODE, raw: '' } }
+    const generateCode = async (input: GenerateCodeInput) => {
+      localMaps.push(input.localMap)
+      return { code: CODE, raw: '' }
+    }
     let n = 0
     const verify = async (): Promise<Verdict> => (++n >= 2 ? { success: true, critique: '' } : { success: false, critique: 'no' })
     const r = await attemptObjective('mine coal', '', { ...base, captureScan, generateCode, verify, maxRetries: 2 })
@@ -90,7 +94,10 @@ describe('attemptObjective', () => {
 
   it('routes to the fast model for early attempts then escalates to the capable model', async () => {
     const models: string[] = []
-    const generateCode = async (input: GenerateCodeInput) => { models.push(input.model); return { code: CODE, raw: '' } }
+    const generateCode = async (input: GenerateCodeInput) => {
+      models.push(input.model)
+      return { code: CODE, raw: '' }
+    }
     const verify = async (): Promise<Verdict> => ({ success: false, critique: 'no' })
     await attemptObjective('x', '', { ...base, actionModel: 'big', fastActionModel: 'fast', modelEscalateAfter: 2, generateCode, verify, maxRetries: 4 })
     // Attempts 1-2 use the fast model, 3-4 escalate to the capable one.
@@ -99,7 +106,10 @@ describe('attemptObjective', () => {
 
   it('uses the capable model for every attempt when no fast model is configured', async () => {
     const models: string[] = []
-    const generateCode = async (input: GenerateCodeInput) => { models.push(input.model); return { code: CODE, raw: '' } }
+    const generateCode = async (input: GenerateCodeInput) => {
+      models.push(input.model)
+      return { code: CODE, raw: '' }
+    }
     const verify = async (): Promise<Verdict> => ({ success: false, critique: 'no' })
     await attemptObjective('x', '', { ...base, actionModel: 'big', generateCode, verify, maxRetries: 3 })
     expect(models).toEqual(['big', 'big', 'big'])

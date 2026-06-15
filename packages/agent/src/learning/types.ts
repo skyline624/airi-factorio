@@ -184,6 +184,8 @@ export interface Ops {
   describeEntity: (name: string) => Promise<EntityInfo | null>
   /** Locate the NEAREST thing of a name far beyond scan range — ore/coal/water (water is a tile, scan never sees it). Null if none within ~400 tiles. */
   findNearest: (name: string) => Promise<NearestResult | null>
+  /** Validated placeAt tiles for `name` near a point (defaults to your position) — pick one by INTENT (e.g. nearest to a drill output) instead of reading exact coords off the map ruler. `{spots:[{x,y}]}` nearest-first (≤12), empty if none placeable in range. Each spot is can_place-verified, so placeAt won't be rejected for being blocked. */
+  placementSpots: (name: string, near?: { x: number, y: number }, radius?: number, direction?: 'north' | 'east' | 'south' | 'west') => Promise<{ spots: Array<{ x: number, y: number }> }>
   /** RESEARCH the full production chain for an item (raw materials to mine + intermediates to make, in order + what's research-locked). Use this instead of remembering the tech tree. */
   craftPlan: (item: string, count?: number) => Promise<CraftPlan | null>
   /** RESEARCH which technology unlocks an item's recipe (+ its science cost & prerequisites). `unlocked:true` = already available. */

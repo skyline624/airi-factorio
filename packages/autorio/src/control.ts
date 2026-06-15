@@ -18,8 +18,9 @@ import type {
 
 import type { InventoryItem } from './utils/inventory'
 import { init_storage, new_task_manager } from './task_manager'
-import { create_tools_remote_interface, status_name } from './tools'
+import { create_tools_remote_interface, find_placeable_spots, status_name } from './tools'
 import { TaskStates } from './types'
+import { direction_from_name } from './utils/direction'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
 import { distance } from './utils/math'
@@ -326,27 +327,6 @@ remote.add_interface('autorio_operations', {
 
 // Map a human-friendly direction string (from the LLM) to a defines.direction.
 // Unknown/undefined falls back to north. (Factorio 2.0 is 16-way: N=0,E=4,S=8,W=12.)
-function direction_from_name(name: string) {
-  switch (name) {
-    case 'east':
-      return defines.direction.east
-    case 'south':
-      return defines.direction.south
-    case 'west':
-      return defines.direction.west
-    case 'northeast':
-      return defines.direction.northeast
-    case 'southeast':
-      return defines.direction.southeast
-    case 'southwest':
-      return defines.direction.southwest
-    case 'northwest':
-      return defines.direction.northwest
-    default:
-      return defines.direction.north
-  }
-}
-
 function get_direction(start_position: MapPositionStruct, end_position: MapPositionStruct) {
   const angle = math.atan2(end_position.y - start_position.y, start_position.x - end_position.x)
   const octant = (angle + math.pi) / (2 * math.pi) * 8 + 0.5
@@ -1119,7 +1099,11 @@ function state_placing_at(player: LuaPlayer) {
     build_check_type: defines.build_check_type.manual,
   })
   if (!can_place) {
-    log(`[AUTORIO] [ERROR] Cannot place ${params.entity_name} at (${params.x},${params.y}): blocked or invalid position`)
+    // Actionable error: suggest the nearest tile that actually IS placeable, so the agent
+    // can walk there and retry instead of guessing again.
+    const near = find_placeable_spots(surface, player.force, params.entity_name, params.x, params.y, 4, params.direction as defines.direction, 1)
+    const hint = near.length > 0 ? ` Nearest free tile: (${near[0].x},${near[0].y}) — walk within reach and placeAt there.` : ''
+    log(`[AUTORIO] [ERROR] Cannot place ${params.entity_name} at (${params.x},${params.y}): blocked or invalid position.${hint}`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return [false, 'Cannot place here']
@@ -1146,7 +1130,7 @@ function state_placing_at(player: LuaPlayer) {
     const ex = math.floor(entity.position.x)
     const ey = math.floor(entity.position.y)
     const es = status_name(entity.status)
-    log(`[AUTORIO] [RESULT] {"op":"place","name":"${params.entity_name}","x":${ex},"y":${ey},"status":"${es}","direction":"${params.direction}"}`)
+    log(`[AUTORIO] [RESULT] {"op":"place","name":"${params.entity_name}","x":${ex},"y":${ey},"status":"${es}"}`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return [true, 'Entity placed successfully', entity]

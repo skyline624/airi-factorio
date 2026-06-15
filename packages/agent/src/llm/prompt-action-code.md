@@ -77,6 +77,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.describeEntity(name)` → `{ type, needsFuel, size, resourceCategories? }` (footprint + whether it needs fuel / must sit on a resource).
 - `await ops.techFor(item)` → what to RESEARCH to unlock it. `await ops.usedIn(item)` → what consumes it.
 - `await ops.findNearest(name)` → `{name,x,y,distance}` for ore/coal/**water** far beyond the map (water is a tile). Then `renderMap(12, {x,y})` to see it.
+- `await ops.placementSpots(name, near?, radius?, direction?)` → `{spots:[{x,y}]}` — ready, can-place-VERIFIED placeAt tiles for `name` near a point (defaults to your position), nearest first. **Prefer this over reading coords off the ruler** for any pose: pick the spot that fits your intent (e.g. the one nearest a drill's output) and `placeAt` it directly — it won't be rejected as blocked. Empty list = nothing placeable in range (move or widen `radius`).
 - `await ops.productionStats()` → `{produced, consumed}` cumulative counters — proof of real output.
 
 **Actions**

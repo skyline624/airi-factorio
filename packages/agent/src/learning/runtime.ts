@@ -250,6 +250,14 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<MapView>(await deps.raw(`/c remote.call('autorio_tools','render_map',${cx},${cy},${rad})`))
       return (d && typeof d === 'object' && Array.isArray(d.grid)) ? d : null
     },
+    placementSpots: async (name, near, radius = 8, direction = 'north') => {
+      bumpOpCount()
+      const cx = (near && typeof near.x === 'number') ? `${Math.floor(near.x)}` : 'nil'
+      const cy = (near && typeof near.y === 'number') ? `${Math.floor(near.y)}` : 'nil'
+      const rad = Math.max(1, Math.floor(radius))
+      const d = extractLastJsonLine<{ spots?: Array<{ x: number, y: number }> }>(await deps.raw(`/c remote.call('autorio_tools','placement_spots',${luaArg(name)},${cx},${cy},${rad},${luaArg(direction)})`))
+      return (d && Array.isArray(d.spots)) ? { spots: d.spots } : { spots: [] }
+    },
     walkToEntity: (entityName, searchRadius = 50) => runOp('walk_to_entity', [entityName, searchRadius]),
     walkTo: (x, y) => runOp('walk_to_position', [x, y]),
     mineEntity: (entityName, count = 1) => runOp('mine_entity', [entityName, count]),
