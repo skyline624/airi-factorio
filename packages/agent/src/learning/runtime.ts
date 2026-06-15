@@ -35,6 +35,39 @@ export function luaArg(value: unknown): string {
 // `craft_item` only settles when it returns success (it can reject synchronously).
 const SETTLING_OPS = new Set(['walk_to_entity', 'walk_to_position', 'mine_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
 
+/**
+ * Per-session memo of the game's STATIC knowledge lookups, so the same recipe /
+ * entity / craft-plan isn't re-fetched over RCON on every skill. `describe` is
+ * prototype data (never changes); recipe/craftPlan/techFor/usedIn depend on the
+ * force's RESEARCH state, so they're dropped whenever researchedCount rises
+ * (`syncCacheEpoch`). NOT a substitute for the model's own reasoning — it only
+ * removes redundant round-trips for facts that genuinely don't change.
+ */
+export interface GameDataCache {
+  describe: Map<string, EntityInfo | null>
+  recipe: Map<string, RecipeInfo | null>
+  craftPlan: Map<string, CraftPlan | null>
+  techFor: Map<string, TechInfo | null>
+  usedIn: Map<string, string[]>
+  /** researchedCount the research-dependent maps are valid for. */
+  epoch: number
+}
+
+export function createGameDataCache(): GameDataCache {
+  return { describe: new Map(), recipe: new Map(), craftPlan: new Map(), techFor: new Map(), usedIn: new Map(), epoch: -1 }
+}
+
+/** Research is monotonic: when researchedCount rises, recipe/plan/tech availability can change → drop those caches (keep the prototype-static `describe`). */
+export function syncCacheEpoch(cache: GameDataCache, researchedCount: number): void {
+  if (researchedCount > cache.epoch) {
+    cache.epoch = researchedCount
+    cache.recipe.clear()
+    cache.craftPlan.clear()
+    cache.techFor.clear()
+    cache.usedIn.clear()
+  }
+}
+
 export interface OpsDeps {
   /** Send a full `/c ...` console command and resolve with the rcon output. */
   raw: (input: string) => Promise<string>
@@ -43,6 +76,8 @@ export interface OpsDeps {
   runSkillByName?: (name: string, args: unknown[], ops: Ops) => Promise<OpResult>
   /** Hard cap on operations a single skill may issue (runaway guard). */
   maxOps?: number
+  /** Optional per-session cache of static knowledge lookups (recipe/entity/plan). */
+  cache?: GameDataCache
 }
 
 /**
@@ -53,6 +88,7 @@ export interface OpsDeps {
 export function createOps(deps: OpsDeps): Ops {
   const logs: string[] = []
   const maxOps = deps.maxOps ?? 200
+  const cache = deps.cache
   let opCount = 0
   let cancelled = false
 
@@ -131,7 +167,12 @@ export function createOps(deps: OpsDeps): Ops {
     },
     getState: async (): Promise<GameState> => {
       bumpOpCount()
-      return parseGameState(await deps.raw(CAPTURE_STATE_COMMAND))
+      const s = parseGameState(await deps.raw(CAPTURE_STATE_COMMAND))
+      // Keep the research-dependent cache fresh: a tech completing mid-session invalidates recipes.
+      if (cache && typeof s.researchedCount === 'number') {
+        syncCacheEpoch(cache, s.researchedCount)
+      }
+      return s
     },
     scan: async (radius = 32): Promise<ScanResult> => {
       bumpOpCount()
@@ -140,13 +181,23 @@ export function createOps(deps: OpsDeps): Ops {
     },
     getRecipe: async (name: string): Promise<RecipeInfo | null> => {
       bumpOpCount()
+      if (cache && cache.recipe.has(name)) {
+        return cache.recipe.get(name) ?? null
+      }
       const d = extractLastJsonLine<{ recipe?: RecipeInfo }>(await deps.raw(`/c remote.call('autorio_tools','describe',${luaArg(name)})`))
-      return (d && typeof d === 'object' && d.recipe) ? d.recipe : null
+      const result = (d && typeof d === 'object' && d.recipe) ? d.recipe : null
+      cache?.recipe.set(name, result)
+      return result
     },
     describeEntity: async (name: string): Promise<EntityInfo | null> => {
       bumpOpCount()
+      if (cache && cache.describe.has(name)) {
+        return cache.describe.get(name) ?? null
+      }
       const d = extractLastJsonLine<{ entity?: EntityInfo }>(await deps.raw(`/c remote.call('autorio_tools','describe',${luaArg(name)})`))
-      return (d && typeof d === 'object' && d.entity) ? d.entity : null
+      const result = (d && typeof d === 'object' && d.entity) ? d.entity : null
+      cache?.describe.set(name, result)
+      return result
     },
     findNearest: async (name: string): Promise<NearestResult | null> => {
       bumpOpCount()
@@ -156,18 +207,34 @@ export function createOps(deps: OpsDeps): Ops {
     craftPlan: async (item: string, count = 1): Promise<CraftPlan | null> => {
       bumpOpCount()
       const c = Math.max(1, Math.floor(count))
+      const key = `${item}|${c}`
+      if (cache && cache.craftPlan.has(key)) {
+        return cache.craftPlan.get(key) ?? null
+      }
       const d = extractLastJsonLine<CraftPlan>(await deps.raw(`/c remote.call('autorio_tools','craft_plan',${luaArg(item)},${c})`))
-      return (d && typeof d === 'object' && Array.isArray(d.steps)) ? d : null
+      const result = (d && typeof d === 'object' && Array.isArray(d.steps)) ? d : null
+      cache?.craftPlan.set(key, result)
+      return result
     },
     techFor: async (item: string): Promise<TechInfo | null> => {
       bumpOpCount()
+      if (cache && cache.techFor.has(item)) {
+        return cache.techFor.get(item) ?? null
+      }
       const d = extractLastJsonLine<TechInfo>(await deps.raw(`/c remote.call('autorio_tools','tech_for',${luaArg(item)})`))
-      return (d && typeof d === 'object' && typeof d.unlocked === 'boolean') ? d : null
+      const result = (d && typeof d === 'object' && typeof d.unlocked === 'boolean') ? d : null
+      cache?.techFor.set(item, result)
+      return result
     },
     usedIn: async (item: string): Promise<string[]> => {
       bumpOpCount()
+      if (cache && cache.usedIn.has(item)) {
+        return cache.usedIn.get(item) ?? []
+      }
       const d = extractLastJsonLine<{ usedIn?: string[] }>(await deps.raw(`/c remote.call('autorio_tools','used_in',${luaArg(item)})`))
-      return (d && Array.isArray(d.usedIn)) ? d.usedIn : []
+      const result = (d && Array.isArray(d.usedIn)) ? d.usedIn : []
+      cache?.usedIn.set(item, result)
+      return result
     },
     productionStats: async (): Promise<{ produced: Record<string, number>, consumed: Record<string, number> } | null> => {
       bumpOpCount()

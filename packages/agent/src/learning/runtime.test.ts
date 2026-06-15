@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) as keys */
 import type { GameState, Ops } from './types'
 import { describe, expect, it, vi } from 'vitest'
-import { createOps, extractEntryName, luaArg, runSkill } from './runtime'
+import { createGameDataCache, createOps, extractEntryName, luaArg, runSkill } from './runtime'
 import { createSettleBus } from './settle-bus'
 
 describe('luaArg', () => {
@@ -125,6 +125,39 @@ describe('createOps', () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
     await expect(ops.skill('build_smelting')).resolves.toEqual({ ok: false, error: expect.stringContaining('not available yet') })
+  })
+
+  it('memoises describeEntity — one RCON call for repeated lookups', async () => {
+    const cache = createGameDataCache()
+    const raw = vi.fn(async () => JSON.stringify({ entity: { name: 'stone-furnace', type: 'furnace', energySource: 'burner', needsFuel: true, size: { w: 2, h: 2 } } }))
+    const ops = createOps({ raw, settleBus: createSettleBus(1000), cache })
+    const a = await ops.describeEntity('stone-furnace')
+    const b = await ops.describeEntity('stone-furnace')
+    expect(a).toEqual(b)
+    expect(raw).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidates research-dependent lookups (getRecipe) when researchedCount rises', async () => {
+    const cache = createGameDataCache()
+    let researched = 0
+    const raw = vi.fn(async (input: string) => {
+      if (input.includes('getstate')) {
+        return JSON.stringify({ tick: 1, inventory: {}, entities: {}, researched_count: researched })
+      }
+      return JSON.stringify({ recipe: { name: 'electronic-circuit', ingredients: [], products: [], enabled: true, category: 'crafting' } })
+    })
+    const ops = createOps({ raw, settleBus: createSettleBus(1000), cache })
+    const describeCalls = () => raw.mock.calls.filter(c => String(c[0]).includes('\'describe\'')).length
+
+    await ops.getState() // epoch -> 0
+    await ops.getRecipe('electronic-circuit') // fetch
+    await ops.getRecipe('electronic-circuit') // cached, no fetch
+    expect(describeCalls()).toBe(1)
+
+    researched = 1
+    await ops.getState() // researchedCount rose -> recipe cache cleared
+    await ops.getRecipe('electronic-circuit') // fetch again
+    expect(describeCalls()).toBe(2)
   })
 })
 

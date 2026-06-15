@@ -174,6 +174,7 @@ async function main() {
       maxOpsPerSkill: learningConfig.maxOpsPerSkill,
       maxRetries: learningConfig.maxRetries,
       deterministicCritic: learningConfig.deterministicCritic,
+      gameDataCache: learningConfig.gameDataCache,
     })
 
     for await (const buffer of ws.source) {
@@ -289,6 +290,7 @@ async function main() {
     maxOpsPerSkill: learningConfig.maxOpsPerSkill,
     maxRetries: learningConfig.maxRetries,
     deterministicCritic: learningConfig.deterministicCritic,
+    gameDataCache: learningConfig.gameDataCache,
   })
 
   // A spark:command from the AIRI general is a chat-equivalent objective.

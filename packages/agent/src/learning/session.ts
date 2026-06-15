@@ -5,7 +5,7 @@ import { attemptObjective } from './attempt'
 import { verify } from './critic'
 import { proposeNextObjective } from './curriculum'
 import { extractLastJsonLine } from './json'
-import { createOps, extractEntryName, runSkill } from './runtime'
+import { createGameDataCache, createOps, extractEntryName, runSkill, syncCacheEpoch } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
 import { buildBatchedCaptureCommand, captureState as captureStateFn, parseBatchedCapture, parseScan } from './state'
@@ -43,6 +43,8 @@ export interface LearningSessionDeps {
   maxRetries: number
   /** When true (default), the deterministic pre-critic settles mechanical objectives without an LLM call. */
   deterministicCritic?: boolean
+  /** When false, disable the per-session static-knowledge cache (recipe/entity/craft-plan). Default: enabled. */
+  gameDataCache?: boolean
 }
 
 export interface LearningController {
@@ -63,10 +65,25 @@ export interface LearningController {
  */
 export function startLearningSession(deps: LearningSessionDeps): LearningController {
   const settleBus = createSettleBus(deps.settleTimeoutMs)
-  const captureState = (): Promise<GameState> => captureStateFn(deps.raw, deps.playerName ?? '')
+  // Per-session cache of static knowledge lookups (recipe/entity/craft-plan), shared by
+  // every skill's ops. Research-dependent entries are dropped when researchedCount rises.
+  const gameDataCache = deps.gameDataCache === false ? undefined : createGameDataCache()
+  const captureState = async (): Promise<GameState> => {
+    const s = await captureStateFn(deps.raw, deps.playerName ?? '')
+    if (gameDataCache && typeof s.researchedCount === 'number') {
+      syncCacheEpoch(gameDataCache, s.researchedCount)
+    }
+    return s
+  }
   // Post-run trio (state + factory census + production counters) in ONE RCON round-trip,
   // instead of three sequential calls per attempt.
-  const captureBatch = async () => parseBatchedCapture(await deps.raw(buildBatchedCaptureCommand(deps.playerName ?? '')))
+  const captureBatch = async () => {
+    const b = parseBatchedCapture(await deps.raw(buildBatchedCaptureCommand(deps.playerName ?? '')))
+    if (gameDataCache && typeof b.state.researchedCount === 'number') {
+      syncCacheEpoch(gameDataCache, b.state.researchedCount)
+    }
+    return b
+  }
   // The critic's post-run evidence: a surface-wide census of the force's producing
   // machines + status (NOT a player-centred scan, which misses the build whenever
   // the agent wandered off — e.g. to mine coal — before the run ended).
@@ -103,6 +120,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     raw: deps.raw,
     settleBus,
     maxOps: deps.maxOpsPerSkill,
+    cache: gameDataCache,
     runSkillByName: async (name, _args, ops) => {
       const skill = library.get(name)
       if (!skill) {

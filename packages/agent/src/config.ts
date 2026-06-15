@@ -61,6 +61,7 @@ export const learningConfig: LearningConfig = {
   maxOpsPerSkill: 200,
   maxRetries: 4,
   deterministicCritic: true,
+  gameDataCache: true,
 }
 
 export function initEnv() {
@@ -126,6 +127,9 @@ export function initEnv() {
   // Settle mechanical objectives (mine/build/research) in code, skipping the critic-LLM
   // round-trip. Defaults on; set LEARNING_DETERMINISTIC_CRITIC=false to always use the LLM.
   learningConfig.deterministicCritic = (env.LEARNING_DETERMINISTIC_CRITIC || 'true').trim().toLowerCase() !== 'false'
+  // Cache static game-data lookups (recipe/entity/craft-plan) per session to cut redundant
+  // RCON round-trips. Defaults on; set LEARNING_GAME_DATA_CACHE=false to disable.
+  learningConfig.gameDataCache = (env.LEARNING_GAME_DATA_CACHE || 'true').trim().toLowerCase() !== 'false'
 
   logger.withFields({ openaiConfig, factorioConfig, debugConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
 }

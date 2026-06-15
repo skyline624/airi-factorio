@@ -53,6 +53,8 @@ export interface LearningConfig {
   maxRetries: number
   /** When true, settle mechanical objectives (mine/build/research) in code, skipping the critic-LLM round-trip. */
   deterministicCritic: boolean
+  /** When true, cache static game-data lookups (recipe/entity/craft-plan) per session to cut redundant RCON round-trips. */
+  gameDataCache: boolean
 }
 
 export interface AiriConfig {
