@@ -17,12 +17,26 @@ export function buildPlayerResolveSnippet(playerName: string): string {
   return `local TARGET=${luaString(playerName)} local function resolve() if TARGET and TARGET~='' then for _,q in pairs(game.players) do if q.valid and q.name==TARGET then return q end end end for _,q in pairs(game.players) do if q.valid and q.connected then return q end end return game.get_player(1) end`
 }
 
-// A self-contained Lua snippet that gathers a compact world snapshot and prints
-// it as JSON. Sent as a raw `/c` console command, so NO autorio mod change is
-// needed. `helpers.table_to_json` is the Factorio 2.0 API (older saves expose
+// A self-contained Lua snippet that defines `local function getstate()` returning
+// the compact world snapshot as a table. Factored out so the SAME state-gathering
+// can be printed alone (capture-state) or embedded in a single batched command
+// alongside scan_factory + production_stats (one RCON round-trip instead of three).
+// `helpers.table_to_json` is the Factorio 2.0 API (older saves expose
 // `game.table_to_json`); we pick whichever exists.
+function buildStateFnSnippet(playerName: string): string {
+  return `${buildPlayerResolveSnippet(playerName)} local function getstate() local p=resolve() if not p then return {} end local inv={} local m=p.get_main_inventory() if m then for _,c in pairs(m.get_contents()) do inv[c.name]=(inv[c.name] or 0)+c.count end end local ent={} for _,e in pairs(p.surface.find_entities_filtered{force=p.force,position=p.position,radius=200}) do if e.name~='character' then ent[e.name]=(ent[e.name] or 0)+1 end end local rs=nil if p.force.current_research then rs=p.force.current_research.name end local tc=0 for _,t in pairs(p.force.technologies) do if t.researched then tc=tc+1 end end local ch=p.character return {tick=game.tick,position=p.position,health=ch and ch.health or nil,max_health=ch and ch.max_health or nil,inventory=inv,entities=ent,current_research=rs,researched_count=tc} end`
+}
+
 function buildCaptureBody(playerName: string): string {
-  return `${buildPlayerResolveSnippet(playerName)} local p=resolve() if not p then rcon.print('{}') return end local inv={} local m=p.get_main_inventory() if m then for _,c in pairs(m.get_contents()) do inv[c.name]=(inv[c.name] or 0)+c.count end end local ent={} for _,e in pairs(p.surface.find_entities_filtered{force=p.force,position=p.position,radius=200}) do if e.name~='character' then ent[e.name]=(ent[e.name] or 0)+1 end end local rs=nil if p.force.current_research then rs=p.force.current_research.name end local tc=0 for _,t in pairs(p.force.technologies) do if t.researched then tc=tc+1 end end local ch=p.character local tj=helpers and helpers.table_to_json or game.table_to_json rcon.print(tj({tick=game.tick,position=p.position,health=ch and ch.health or nil,max_health=ch and ch.max_health or nil,inventory=inv,entities=ent,current_research=rs,researched_count=tc}))`
+  return `${buildStateFnSnippet(playerName)} local tj=helpers and helpers.table_to_json or game.table_to_json rcon.print(tj(getstate()))`
+}
+
+// One command that returns the post-run trio — player state + factory census
+// (scan_factory) + production counters (production_stats) — as a single JSON
+// `{state,scan,production}`. Each tool call is pcall-guarded so a missing remote
+// interface yields nil rather than aborting the whole capture.
+function buildBatchedCaptureBody(playerName: string): string {
+  return `${buildStateFnSnippet(playerName)} local function jcall(n) local ok,r=pcall(remote.call,'autorio_tools',n) if ok then return r else return nil end end local tj=helpers and helpers.table_to_json or game.table_to_json rcon.print(tj({state=getstate(),scan=jcall('scan_factory'),production=jcall('production_stats')}))`
 }
 
 export const CAPTURE_STATE_COMMAND = `/c ${buildCaptureBody('')}`
@@ -30,6 +44,11 @@ export const CAPTURE_STATE_COMMAND = `/c ${buildCaptureBody('')}`
 /** Build a `/c` command that captures the world for the given player name (or auto-detect if empty). */
 export function buildCaptureStateCommand(playerName: string): string {
   return `/c ${buildCaptureBody(playerName)}`
+}
+
+/** Build a `/c` command that captures state + factory census + production counters in ONE round-trip. */
+export function buildBatchedCaptureCommand(playerName: string): string {
+  return `/c ${buildBatchedCaptureBody(playerName)}`
 }
 
 /**
@@ -61,9 +80,7 @@ function asCountRecord(value: unknown): Record<string, number> {
   return out
 }
 
-export function parseGameState(output: string): GameState {
-  const raw = extractLastJsonLine<Record<string, unknown>>(output) ?? {}
-
+function gameStateFromRaw(raw: Record<string, unknown>): GameState {
   let position: { x: number, y: number } | undefined
   if (raw.position && typeof raw.position === 'object' && !Array.isArray(raw.position)) {
     const p = raw.position as { x?: unknown, y?: unknown }
@@ -80,6 +97,10 @@ export function parseGameState(output: string): GameState {
     currentResearch: typeof raw.current_research === 'string' ? raw.current_research : undefined,
     researchedCount: typeof raw.researched_count === 'number' ? raw.researched_count : undefined,
   }
+}
+
+export function parseGameState(output: string): GameState {
+  return gameStateFromRaw(extractLastJsonLine<Record<string, unknown>>(output) ?? {})
 }
 
 /** Capture the current world state via a raw `/c` command and the given RCON sender. */
@@ -132,10 +153,7 @@ export function diffState(before: GameState, after: GameState): string {
   return lines.join('\n')
 }
 
-/** Parse the JSON reply from the `scan_area` tool into a structured local map. */
-export function parseScan(output: string): ScanResult {
-  const raw = extractLastJsonLine<Record<string, unknown>>(output) ?? {}
-
+function scanFromRaw(raw: Record<string, unknown>): ScanResult {
   const entities: ScanEntity[] = []
   if (Array.isArray(raw.entities)) {
     for (const item of raw.entities as unknown[]) {
@@ -183,5 +201,33 @@ export function parseScan(output: string): ScanResult {
     radius: typeof raw.radius === 'number' ? raw.radius : undefined,
     entities,
     resources,
+  }
+}
+
+/** Parse the JSON reply from the `scan_area`/`scan_factory` tool into a structured local map. */
+export function parseScan(output: string): ScanResult {
+  return scanFromRaw(extractLastJsonLine<Record<string, unknown>>(output) ?? {})
+}
+
+/** A post-run snapshot captured in ONE RCON round-trip: state + factory census + production counters. */
+export interface BatchedCapture {
+  state: GameState
+  scan: ScanResult
+  production: Record<string, number> | null
+}
+
+/** Parse the combined `{state,scan,production}` JSON from `buildBatchedCaptureCommand`. */
+export function parseBatchedCapture(output: string): BatchedCapture {
+  const raw = extractLastJsonLine<Record<string, unknown>>(output) ?? {}
+  const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v)) ? v as Record<string, unknown> : {}
+  let production: Record<string, number> | null = null
+  const prod = obj(raw.production)
+  if (prod.produced && typeof prod.produced === 'object') {
+    production = asCountRecord(prod.produced)
+  }
+  return {
+    state: gameStateFromRaw(obj(raw.state)),
+    scan: scanFromRaw(obj(raw.scan)),
+    production,
   }
 }

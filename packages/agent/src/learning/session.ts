@@ -8,7 +8,7 @@ import { extractLastJsonLine } from './json'
 import { createOps, extractEntryName, runSkill } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
-import { captureState as captureStateFn, parseScan } from './state'
+import { buildBatchedCaptureCommand, captureState as captureStateFn, parseBatchedCapture, parseScan } from './state'
 
 const logger = useLogg('learning').useGlobalConfig()
 
@@ -64,6 +64,9 @@ export interface LearningController {
 export function startLearningSession(deps: LearningSessionDeps): LearningController {
   const settleBus = createSettleBus(deps.settleTimeoutMs)
   const captureState = (): Promise<GameState> => captureStateFn(deps.raw, deps.playerName ?? '')
+  // Post-run trio (state + factory census + production counters) in ONE RCON round-trip,
+  // instead of three sequential calls per attempt.
+  const captureBatch = async () => parseBatchedCapture(await deps.raw(buildBatchedCaptureCommand(deps.playerName ?? '')))
   // The critic's post-run evidence: a surface-wide census of the force's producing
   // machines + status (NOT a player-centred scan, which misses the build whenever
   // the agent wandered off — e.g. to mine coal — before the run ended).
@@ -134,6 +137,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       captureState,
       captureScan,
       captureProduction,
+      captureBatch,
       resetTasks,
       generateCode,
       verify,

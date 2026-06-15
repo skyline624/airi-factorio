@@ -1,5 +1,6 @@
 import type { GenerateCodeInput, GeneratedCode, RetrievedSkill } from './action'
 import type { VerifyOptions } from './critic'
+import type { BatchedCapture } from './state'
 import type { GameState, Ops, ScanResult, Verdict } from './types'
 import { summarizeScan } from './action'
 import { precheckVerdict } from './precheck'
@@ -17,6 +18,8 @@ export interface AttemptDeps {
   captureScan?: () => Promise<ScanResult>
   /** Optional force-wide production counters → the critic sees what was actually MADE during the objective (not just what the player holds). */
   captureProduction?: () => Promise<Record<string, number> | null>
+  /** Optional ONE-round-trip post-run capture (state + factory census + production). When set, used instead of the three separate calls. */
+  captureBatch?: () => Promise<BatchedCapture>
   generateCode: (input: GenerateCodeInput) => Promise<GeneratedCode>
   verify: (options: VerifyOptions) => Promise<Verdict>
   actionModel: string
@@ -117,9 +120,22 @@ export async function attemptObjective(objective: string, context: string, deps:
     const result = await runSkill(code, ops, current, { timeoutMs: deps.sandboxTimeoutMs })
     logs = result.logs
 
-    const after = await deps.captureState()
-    const scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
-    const prodAfter = deps.captureProduction ? await deps.captureProduction() : null
+    // Post-run evidence. Prefer the batched one-round-trip capture; fall back to the
+    // three separate calls when no batch capture is wired (e.g. in unit tests).
+    let after: GameState
+    let scanSummary: string | undefined
+    let prodAfter: Record<string, number> | null
+    if (deps.captureBatch) {
+      const batch = await deps.captureBatch()
+      after = batch.state
+      scanSummary = summarizeScan(batch.scan)
+      prodAfter = batch.production
+    }
+    else {
+      after = await deps.captureState()
+      scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
+      prodAfter = deps.captureProduction ? await deps.captureProduction() : null
+    }
     const productionSummary = summarizeProductionDelta(prodBefore, prodAfter)
 
     // Deterministic pre-critic: settle the mechanical objectives (mine/build/research)

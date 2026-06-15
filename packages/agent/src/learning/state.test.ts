@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) and snake_case JSON keys */
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diffState, parseGameState, parseScan } from './state'
+import { buildBatchedCaptureCommand, buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diffState, parseBatchedCapture, parseGameState, parseScan } from './state'
 
 describe('parseGameState', () => {
   it('parses a normal snapshot and maps snake_case fields', () => {
@@ -151,5 +151,45 @@ describe('parseScan', () => {
   it('handles empty / junk defensively', () => {
     expect(parseScan('{}')).toEqual({ origin: undefined, radius: undefined, entities: [], resources: {} })
     expect(parseScan('not json').entities).toEqual([])
+  })
+})
+
+describe('buildBatchedCaptureCommand', () => {
+  it('is a /c command that gathers state + scan_factory + production_stats in one go', () => {
+    const cmd = buildBatchedCaptureCommand('')
+    expect(cmd.startsWith('/c ')).toBe(true)
+    expect(cmd).toContain('getstate()')
+    expect(cmd).toContain('scan_factory')
+    expect(cmd).toContain('production_stats')
+    // Exactly one print: the combined object.
+    expect(cmd.match(/rcon\.print/g)?.length).toBe(1)
+  })
+})
+
+describe('parseBatchedCapture', () => {
+  it('splits the combined {state,scan,production} reply', () => {
+    const json = JSON.stringify({
+      state: { tick: 7, inventory: { coal: 12 }, entities: { 'stone-furnace': 1 }, researched_count: 2 },
+      scan: { entities: [{ name: 'stone-furnace', type: 'furnace', x: 0, y: 0, direction: 'north', status: 'working' }], resources: {} },
+      production: { produced: { 'iron-plate': 30 }, consumed: { 'iron-ore': 30 } },
+    })
+    const b = parseBatchedCapture(json)
+    expect(b.state.inventory.coal).toBe(12)
+    expect(b.state.researchedCount).toBe(2)
+    expect(b.scan.entities[0]?.status).toBe('working')
+    expect(b.production).toEqual({ 'iron-plate': 30 })
+  })
+
+  it('defaults missing sub-objects (nil scan/production) without throwing', () => {
+    const b = parseBatchedCapture(JSON.stringify({ state: { tick: 1, inventory: {}, entities: {} } }))
+    expect(b.scan.entities).toEqual([])
+    expect(b.production).toBeNull()
+  })
+
+  it('survives junk', () => {
+    const b = parseBatchedCapture('not json')
+    expect(b.state.inventory).toEqual({})
+    expect(b.scan.entities).toEqual([])
+    expect(b.production).toBeNull()
   })
 })
