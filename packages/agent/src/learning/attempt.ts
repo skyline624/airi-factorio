@@ -83,6 +83,9 @@ export async function attemptObjective(objective: string, context: string, deps:
   let lastError: string | null = null
   let lastCritique: string | null = null
   let lastHints: string[] | null = null
+  // The post-run machine status (entities + status) the critic just judged. Reused as the
+  // next attempt's local map so the model sees EXACTLY the critic's evidence (and we skip a scan).
+  let lastScanSummary: string | undefined
   let lastVerdict: Verdict | undefined
   let logs: string[] = []
   let code: string | null = null
@@ -95,7 +98,11 @@ export async function attemptObjective(objective: string, context: string, deps:
     // completion can't resolve this attempt's first op.
     await deps.resetTasks?.()
 
-    const localMap = deps.captureScan ? summarizeScan(await deps.captureScan()) : null
+    // On a retry, reuse the previous run's post-run scan (nothing changed but cancelled
+    // orphan tasks) — it is precisely what the critic judged, and saves a fresh scan.
+    const localMap = (attempt > 1 && lastScanSummary !== undefined)
+      ? lastScanSummary
+      : (deps.captureScan ? summarizeScan(await deps.captureScan()) : null)
 
     const gen = await deps.generateCode({
       objective,
@@ -176,6 +183,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     lastCritique = verdict.critique
     // Surface the static smells (blind placement / missing await) to the next attempt.
     lastHints = lint.hints.length ? lint.hints : null
+    // Feed this run's post-run machine status forward as the next attempt's local map.
+    lastScanSummary = scanSummary
     deps.log?.(`  -> not yet: ${verdict.critique || result.error || 'unknown'}`)
   }
 
