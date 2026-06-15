@@ -24,6 +24,10 @@ export interface AttemptDeps {
   generateCode: (input: GenerateCodeInput) => Promise<GeneratedCode>
   verify: (options: VerifyOptions) => Promise<Verdict>
   actionModel: string
+  /** Optional faster model for the first attempts; empty = always use actionModel. */
+  fastActionModel?: string
+  /** Attempts 1..N use fastActionModel; later attempts escalate to actionModel. Default 2. */
+  modelEscalateAfter?: number
   criticModel: string
   sandboxTimeoutMs: number
   maxRetries?: number
@@ -92,7 +96,12 @@ export async function attemptObjective(objective: string, context: string, deps:
   let raw = ''
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    deps.log?.(`Attempt ${attempt}/${maxRetries}: ${objective}`)
+    // Model routing: cheap/fast model for the first attempts, escalate to the capable model
+    // once they've been spent. Disabled (always actionModel) when no fast model is configured.
+    const actionModel = (deps.fastActionModel && attempt <= (deps.modelEscalateAfter ?? 2))
+      ? deps.fastActionModel
+      : deps.actionModel
+    deps.log?.(`Attempt ${attempt}/${maxRetries} [${actionModel}]: ${objective}`)
 
     // Clear any orphaned task from a previous (e.g. timed-out) attempt so its late
     // completion can't resolve this attempt's first op.
@@ -115,7 +124,7 @@ export async function attemptObjective(objective: string, context: string, deps:
       hints: lastHints,
       progress: attempt === 1 ? null : diffState(before, current),
       localMap,
-      model: deps.actionModel,
+      model: actionModel,
     })
     code = gen.code
     raw = gen.raw

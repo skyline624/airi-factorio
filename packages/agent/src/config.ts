@@ -52,6 +52,8 @@ export const learningConfig: LearningConfig = {
   maxObjectives: 6,
   objective: 'Mine 10 iron ore and 5 coal.',
   actionModel: '',
+  fastActionModel: '',
+  modelEscalateAfter: 2,
   criticModel: '',
   embeddingModel: 'qwen3-embedding:8b',
   embeddingBaseUrl: '',
@@ -116,6 +118,10 @@ export function initEnv() {
   learningConfig.maxObjectives = Number.parseInt(env.LEARNING_MAX_OBJECTIVES || '6')
   learningConfig.objective = (env.LEARNING_OBJECTIVE || learningConfig.objective).trim()
   learningConfig.actionModel = (env.LEARNING_ACTION_MODEL || '').trim()
+  // Optional cheaper/faster model for the first attempts; empty = no routing (always actionModel).
+  // After LEARNING_MODEL_ESCALATE_AFTER failed attempts, fall back to the capable actionModel.
+  learningConfig.fastActionModel = (env.LEARNING_FAST_ACTION_MODEL || '').trim()
+  learningConfig.modelEscalateAfter = Number.parseInt(env.LEARNING_MODEL_ESCALATE_AFTER || '2')
   learningConfig.criticModel = (env.LEARNING_CRITIC_MODEL || '').trim()
   learningConfig.embeddingModel = (env.LEARNING_EMBEDDING_MODEL || 'qwen3-embedding:8b').trim()
   learningConfig.embeddingBaseUrl = (env.LEARNING_EMBEDDING_BASEURL || '').trim()

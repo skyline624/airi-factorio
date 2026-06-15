@@ -165,6 +165,8 @@ async function main() {
       // Used only when curriculumEnabled is false; ' | '-separated.
       objectives: learningConfig.objective.split('|').map(s => s.trim()).filter(Boolean),
       actionModel: learningConfig.actionModel || openaiConfig.model,
+      fastActionModel: learningConfig.fastActionModel,
+      modelEscalateAfter: learningConfig.modelEscalateAfter,
       criticModel: learningConfig.criticModel || openaiConfig.model,
       embeddingModel: learningConfig.embeddingModel,
       embeddingBaseUrl: learningConfig.embeddingBaseUrl || openaiConfig.baseUrl,
@@ -281,6 +283,8 @@ async function main() {
     maxObjectives: 0,
     objectives: [],
     actionModel: learningConfig.actionModel || openaiConfig.model,
+    fastActionModel: learningConfig.fastActionModel,
+    modelEscalateAfter: learningConfig.modelEscalateAfter,
     criticModel: learningConfig.criticModel || openaiConfig.model,
     embeddingModel: learningConfig.embeddingModel,
     embeddingBaseUrl: learningConfig.embeddingBaseUrl || openaiConfig.baseUrl,

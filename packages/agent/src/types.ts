@@ -35,6 +35,10 @@ export interface LearningConfig {
   objective: string
   /** Capable code-generation model for the action agent (empty -> fall back to OPENAI_MODEL). */
   actionModel: string
+  /** Optional faster model used for the FIRST attempts; empty disables routing (always actionModel). */
+  fastActionModel: string
+  /** Attempts 1..N use fastActionModel; attempt N+1 onward escalate to actionModel. */
+  modelEscalateAfter: number
   /** Model used by the critic / curriculum / skill-describer (empty -> fall back to OPENAI_MODEL). */
   criticModel: string
   /** Ollama embedding model used to index the skill library (step 4). */

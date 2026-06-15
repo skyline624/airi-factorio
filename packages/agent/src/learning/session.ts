@@ -33,6 +33,10 @@ export interface LearningSessionDeps {
   /** Fixed objectives (used when curriculumEnabled is false). */
   objectives: string[]
   actionModel: string
+  /** Optional faster model for the first attempts; empty = always actionModel. */
+  fastActionModel?: string
+  /** Attempts 1..N use fastActionModel; later attempts escalate. */
+  modelEscalateAfter?: number
   criticModel: string
   embeddingModel: string
   embeddingBaseUrl: string
@@ -161,6 +165,8 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       verify,
       skills,
       actionModel: deps.actionModel,
+      fastActionModel: deps.fastActionModel,
+      modelEscalateAfter: deps.modelEscalateAfter,
       criticModel: deps.criticModel,
       sandboxTimeoutMs: deps.sandboxTimeoutMs,
       maxRetries: deps.maxRetries,

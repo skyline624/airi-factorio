@@ -88,6 +88,23 @@ describe('attemptObjective', () => {
     expect(localMaps[1]).toContain('no_fuel')
   })
 
+  it('routes to the fast model for early attempts then escalates to the capable model', async () => {
+    const models: string[] = []
+    const generateCode = async (input: GenerateCodeInput) => { models.push(input.model); return { code: CODE, raw: '' } }
+    const verify = async (): Promise<Verdict> => ({ success: false, critique: 'no' })
+    await attemptObjective('x', '', { ...base, actionModel: 'big', fastActionModel: 'fast', modelEscalateAfter: 2, generateCode, verify, maxRetries: 4 })
+    // Attempts 1-2 use the fast model, 3-4 escalate to the capable one.
+    expect(models).toEqual(['fast', 'fast', 'big', 'big'])
+  })
+
+  it('uses the capable model for every attempt when no fast model is configured', async () => {
+    const models: string[] = []
+    const generateCode = async (input: GenerateCodeInput) => { models.push(input.model); return { code: CODE, raw: '' } }
+    const verify = async (): Promise<Verdict> => ({ success: false, critique: 'no' })
+    await attemptObjective('x', '', { ...base, actionModel: 'big', generateCode, verify, maxRetries: 3 })
+    expect(models).toEqual(['big', 'big', 'big'])
+  })
+
   it('gives up after maxRetries when never approved', async () => {
     const generateCode = async () => ({ code: CODE, raw: '' })
     const verify = async (): Promise<Verdict> => ({ success: false, critique: 'no' })
