@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseChatMessage, parseCommandMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
+import { parseChatMessage, parseCommandMessage, parseLLMMessage, parseModErrorMessage, parseModResultMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 
 describe('parseCommandMessage', () => {
   it('should parse player command', () => {
@@ -73,6 +73,25 @@ describe('parseOperationCompletedMessage', () => {
       serverTimestamp: '51.889',
       type: 'operationsCompleted',
     })
+  })
+})
+
+describe('parseModResultMessage', () => {
+  it('parses a structured [RESULT] line into data', () => {
+    const log = `51.889 Script @__autorio__/control.lua:1146: [AUTORIO] [RESULT] {"op":"place","name":"stone-furnace","x":53,"y":-15,"status":"no_fuel","direction":"north"}`
+    expect(parseModResultMessage(log)).toEqual({
+      type: 'modResult',
+      serverTimestamp: '51.889',
+      data: { op: 'place', name: 'stone-furnace', x: 53, y: -15, status: 'no_fuel', direction: 'north' },
+    })
+  })
+
+  it('returns null on a non-result line', () => {
+    expect(parseModResultMessage('42.535 Script @__autorio__/control.lua:920: [AUTORIO] All operations completed')).toBeNull()
+  })
+
+  it('returns null (non-fatal) on malformed JSON', () => {
+    expect(parseModResultMessage('1.000 Script @__autorio__/control.lua:1: [AUTORIO] [RESULT] {bad json')).toBeNull()
   })
 })
 

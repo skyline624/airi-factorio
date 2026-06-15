@@ -25,6 +25,13 @@ export interface OperationCompletedMessage {
   serverTimestamp: string
 }
 
+export interface ModResultMessage {
+  type: 'modResult'
+  serverTimestamp: string
+  /** Structured per-op payload printed by the mod (e.g. a placed entity's tile + status). */
+  data: Record<string, unknown>
+}
+
 export interface PlayerEventMessage {
   type: 'playerEvent'
   serverTimestamp: string
@@ -39,7 +46,7 @@ export interface AutonomousTickMessage {
   content: string
 }
 
-export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage | PlayerEventMessage | AutonomousTickMessage
+export type StdoutMessage = ChatMessage | CommandMessage | ModErrorMessage | OperationCompletedMessage | ModResultMessage | PlayerEventMessage | AutonomousTickMessage
 
 export interface LLMMessage {
   chatMessage: string
@@ -135,6 +142,26 @@ export function parseOperationCompletedMessage(log: string): OperationCompletedM
     return { serverTimestamp, type: 'operationsCompleted' }
   }
 
+  return null
+}
+
+export function parseModResultMessage(log: string): ModResultMessage | null {
+  // example: 51.889 Script @__autorio__/control.lua:1146: [AUTORIO] [RESULT] {"op":"place","name":"stone-furnace","x":53,"y":-15,"status":"no_fuel","direction":"north"}
+  const regex = /(\d+\.\d{3}) Script @__autorio__\/control\.lua:(\d+): \[AUTORIO\] \[RESULT\] (.+)/
+  const match = log.match(regex)
+  if (!match) {
+    return null
+  }
+  const [, serverTimestamp, , json] = match
+  try {
+    const data = JSON.parse(json.trim()) as Record<string, unknown>
+    if (data && typeof data === 'object') {
+      return { type: 'modResult', serverTimestamp, data }
+    }
+  }
+  catch {
+    // A malformed result line is non-fatal — the op still settles, just without rich data.
+  }
   return null
 }
 

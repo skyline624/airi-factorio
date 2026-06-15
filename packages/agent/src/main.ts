@@ -13,7 +13,7 @@ import { buildPlayerPresenceCommand, buildScreenshotCommand } from './learning/s
 import { createMessageHandler } from './llm/message-handler'
 import autonomousVisionPrompt from './llm/prompt-autonomous-vision.md?raw'
 import autonomousPrompt from './llm/prompt-autonomous.md?raw'
-import { parseChatMessage, parseLLMMessage, parseModErrorMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
+import { parseChatMessage, parseLLMMessage, parseModErrorMessage, parseModResultMessage, parseOperationCompletedMessage, parsePlayerEventMessage } from './parser'
 import { initRcon, rconCommand, rconSay } from './rcon'
 
 setGlobalFormat(Format.Pretty)
@@ -189,6 +189,13 @@ async function main() {
         continue
       }
 
+      // A [RESULT] line precedes the op's completion — stash it so placeAt's settle carries it.
+      const modResultMessage = parseModResultMessage(line)
+      if (modResultMessage) {
+        session.onResult(modResultMessage.data)
+        continue
+      }
+
       const operationCompletedMessage = parseOperationCompletedMessage(line)
       if (operationCompletedMessage) {
         session.onSettled('completed')
@@ -310,6 +317,13 @@ async function main() {
     if (modErrorMessage) {
       gameLogger.withContext('mod').error(modErrorMessage.error)
       session.onSettled('error', modErrorMessage.error)
+      continue
+    }
+
+    // A [RESULT] line precedes the op's completion — stash it so placeAt's settle carries it.
+    const modResultMessage = parseModResultMessage(line)
+    if (modResultMessage) {
+      session.onResult(modResultMessage.data)
       continue
     }
 

@@ -101,6 +101,16 @@ describe('createOps', () => {
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`remote.call('autorio_operations','place_entity_at','transport-belt',5,12,'south')`))
   })
 
+  it('placeAt returns the mod result payload (tile + status) on completion', async () => {
+    const bus = createSettleBus(1000)
+    const raw = vi.fn(async () => '[true]')
+    const ops = createOps({ raw, settleBus: bus })
+    const p = ops.placeAt('stone-furnace', { x: 53, y: -15, direction: 'north' })
+    bus.result({ op: 'place', name: 'stone-furnace', x: 53, y: -15, status: 'no_fuel' })
+    bus.settle('completed')
+    await expect(p).resolves.toEqual({ ok: true, data: { op: 'place', name: 'stone-furnace', x: 53, y: -15, status: 'no_fuel' } })
+  })
+
   it('placeAt propagates an in-game error (blocked tile) and defaults direction to north', async () => {
     const bus = createSettleBus(1000)
     const raw = vi.fn(async () => '[true]')

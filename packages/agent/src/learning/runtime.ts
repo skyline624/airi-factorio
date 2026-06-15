@@ -149,7 +149,8 @@ export function createOps(deps: OpsDeps): Ops {
 
     const settled = await settlePromise
     if (settled.result === 'completed') {
-      return { ok: true }
+      // For ops the mod reports on (e.g. placeAt -> {x,y,status}), surface the payload as data.
+      return settled.data ? { ok: true, data: settled.data } : { ok: true }
     }
     if (settled.result === 'error') {
       return { ok: false, error: settled.detail ?? 'in-game error' }

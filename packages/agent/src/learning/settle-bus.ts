@@ -8,6 +8,8 @@ export interface SettleBus {
   arm: () => Promise<SettleResult>
   /** Resolve the armed waiter (fed by the stdout / WS reader). */
   settle: (result: 'completed' | 'error', detail?: string) => void
+  /** Stash the mod's structured per-op result; attached to the NEXT `settle('completed')`. */
+  result: (data: Record<string, unknown>) => void
   /** Abandon the armed waiter (e.g. the op failed synchronously, so no settle will come). */
   cancel: () => void
 }
@@ -21,6 +23,9 @@ export interface SettleBus {
 export function createSettleBus(timeoutMs: number = DEFAULT_SETTLE_TIMEOUT_MS): SettleBus {
   let resolver: ((value: SettleResult) => void) | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
+  // The latest structured per-op result the mod printed during the CURRENT op window.
+  // Cleared on arm() so a non-result op never inherits a previous op's data.
+  let pendingData: Record<string, unknown> | undefined
 
   function clear() {
     if (timer) {
@@ -42,13 +47,18 @@ export function createSettleBus(timeoutMs: number = DEFAULT_SETTLE_TIMEOUT_MS): 
     arm() {
       // A new arm supersedes any previous one (sequential op usage makes this rare).
       resolve({ result: 'cancelled' })
+      pendingData = undefined
       return new Promise<SettleResult>((res) => {
         resolver = res
         timer = setTimeout(() => resolve({ result: 'timeout' }), timeoutMs)
       })
     },
     settle(result, detail) {
-      resolve({ result, detail })
+      // Attach any result stashed during this op window (only meaningful on 'completed').
+      resolve({ result, detail, data: result === 'completed' ? pendingData : undefined })
+    },
+    result(data) {
+      pendingData = data
     },
     cancel() {
       resolve({ result: 'cancelled' })

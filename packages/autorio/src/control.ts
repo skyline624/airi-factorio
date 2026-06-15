@@ -18,7 +18,7 @@ import type {
 
 import type { InventoryItem } from './utils/inventory'
 import { init_storage, new_task_manager } from './task_manager'
-import { create_tools_remote_interface } from './tools'
+import { create_tools_remote_interface, status_name } from './tools'
 import { TaskStates } from './types'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
@@ -1139,6 +1139,14 @@ function state_placing_at(player: LuaPlayer) {
     item_stack.count = item_stack.count - 1
     push_character_clear(player, entity)
     log(`[AUTORIO] Entity placed at exact position: ${params.entity_name} (${params.x},${params.y})`)
+    // Structured per-op result for the agent: the confirmed placed tile + the entity's
+    // status right after placing (e.g. a fresh burner reads no_fuel). Hand-built JSON
+    // (flat schema, Factorio-internal names are JSON-safe) so the agent's settle reader
+    // can attach it to placeAt's return — closing the place->verify loop in one op.
+    const ex = math.floor(entity.position.x)
+    const ey = math.floor(entity.position.y)
+    const es = status_name(entity.status)
+    log(`[AUTORIO] [RESULT] {"op":"place","name":"${params.entity_name}","x":${ex},"y":${ey},"status":"${es}","direction":"${params.direction}"}`)
     task_manager.reset_task_state()
     task_manager.next_task()
     return [true, 'Entity placed successfully', entity]

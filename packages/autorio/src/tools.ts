@@ -29,8 +29,9 @@ function name_from_direction(dir: number): string {
 }
 
 // Reverse map: a defines.entity_status int -> string. The statuses the agent cares
-// about for automation; anything else -> 'other', nil -> 'n/a'.
-function status_name(status: number | undefined): string {
+// about for automation; anything else -> 'other', nil -> 'n/a'. Exported so the
+// placement handler can report a just-placed entity's status (B1 structured result).
+export function status_name(status: number | undefined): string {
   if (status === undefined) {
     return 'n/a'
   }

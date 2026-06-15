@@ -54,6 +54,8 @@ export interface LearningSessionDeps {
 export interface LearningController {
   /** Fed by the WS reader when the mod prints a per-op result. */
   onSettled: (result: 'completed' | 'error', detail?: string) => void
+  /** Fed when the mod prints a structured [RESULT] line; stashed for the next settle. */
+  onResult: (data: Record<string, unknown>) => void
   /** Fed when a human types in chat — becomes the next objective (a redirection). */
   onChat: (username: string, message: string) => void
   /** Fed when a perception [EVENT] arrives. */
@@ -295,6 +297,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
 
   return {
     onSettled: (result, detail) => settleBus.settle(result, detail),
+    onResult: data => settleBus.result(data),
     onChat: (username, message) => {
       logger.withContext('chat').log(`${username}: ${message}`)
       // A human chat line is the next objective (a redirection in curriculum mode, the SOLE

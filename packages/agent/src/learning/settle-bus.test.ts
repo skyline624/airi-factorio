@@ -41,4 +41,31 @@ describe('createSettleBus', () => {
     await expect(first).resolves.toEqual({ result: 'cancelled' })
     await expect(second).resolves.toEqual({ result: 'completed' })
   })
+
+  it('attaches a stashed result to the next completed settle', async () => {
+    const bus = createSettleBus(1000)
+    const p = bus.arm()
+    bus.result({ op: 'place', x: 5, y: 12, status: 'no_fuel' })
+    bus.settle('completed')
+    await expect(p).resolves.toEqual({ result: 'completed', data: { op: 'place', x: 5, y: 12, status: 'no_fuel' } })
+  })
+
+  it('does not attach result data to an error settle', async () => {
+    const bus = createSettleBus(1000)
+    const p = bus.arm()
+    bus.result({ x: 1, y: 2 })
+    bus.settle('error', 'blocked')
+    await expect(p).resolves.toEqual({ result: 'error', detail: 'blocked' })
+  })
+
+  it('clears a stashed result on re-arm so no stale data leaks to the next op', async () => {
+    const bus = createSettleBus(1000)
+    const p1 = bus.arm()
+    bus.result({ x: 1, y: 2 })
+    bus.settle('completed')
+    await expect(p1).resolves.toEqual({ result: 'completed', data: { x: 1, y: 2 } })
+    const p2 = bus.arm()
+    bus.settle('completed')
+    await expect(p2).resolves.toEqual({ result: 'completed' })
+  })
 })

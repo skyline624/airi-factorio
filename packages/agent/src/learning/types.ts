@@ -28,6 +28,8 @@ export interface OpResult {
 export interface SettleResult {
   result: 'completed' | 'error' | 'timeout' | 'cancelled'
   detail?: string
+  /** Structured per-op payload the mod printed before completion (e.g. a placed entity's tile + status). */
+  data?: Record<string, unknown>
 }
 
 /** The critic's verdict on whether an objective was achieved. */
@@ -194,7 +196,7 @@ export interface Ops {
   /** Walk to an arbitrary tile (x,y) — the ONLY way to reach a spot with no entity, e.g. a water shore for an offshore-pump (water is a tile, walkToEntity can't target it). The character stops within reach. */
   walkTo: (x: number, y: number) => Promise<OpResult>
   mineEntity: (entityName: string, count?: number) => Promise<OpResult>
-  /** Place ONE entity at EXACT coords (no snapping). The ONLY placement op. (x,y) is the machine's CENTER: a 2x2 (drill/furnace/assembler) covers the four tiles UP-and-LEFT of (x,y) — (x-1,y-1)..(x,y) — so to COVER a target tile T pass (T.x+1, T.y+1). 1x1 entities sit on their own tile. Read coords off `renderMap` (or use ready coords like pump_spots / drill_outputs.furnace_at). */
+  /** Place ONE entity at EXACT coords (no snapping). The ONLY placement op. (x,y) is the machine's CENTER: a 2x2 (drill/furnace/assembler) covers the four tiles UP-and-LEFT of (x,y) — (x-1,y-1)..(x,y) — so to COVER a target tile T pass (T.x+1, T.y+1). 1x1 entities sit on their own tile. Read coords off `renderMap` (or use ready coords like pump_spots / drill_outputs.furnace_at). On success `data` carries `{x,y,status,name}` (the confirmed tile + the just-placed entity's status), so you can react without a follow-up scan; may be absent on older mods. */
   placeAt: (entityName: string, at: { x: number, y: number, direction?: 'north' | 'east' | 'south' | 'west' | 'northeast' | 'southeast' | 'southwest' | 'northwest' }) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
