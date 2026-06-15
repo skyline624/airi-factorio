@@ -1,7 +1,10 @@
 import type { SettleResult } from './types'
 
-/** A batch of operations shouldn't realistically take longer than this. */
-const DEFAULT_SETTLE_TIMEOUT_MS = 180_000
+// Backstop only: a single op shouldn't realistically take this long, and the mod
+// already fast-fails most stuck cases via [ERROR] (path abandon, mine stall watchdog,
+// nothing-moved). Production passes LEARNING_SETTLE_TIMEOUT_MS (60s); this default just
+// matches it so a bus created without an explicit timeout behaves the same.
+const DEFAULT_SETTLE_TIMEOUT_MS = 60_000
 
 export interface SettleBus {
   /** Arm a one-shot waiter for the next in-game settle. Call BEFORE dispatching the op. */

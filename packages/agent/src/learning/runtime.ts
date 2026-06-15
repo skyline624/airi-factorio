@@ -156,7 +156,9 @@ export function createOps(deps: OpsDeps): Ops {
       return { ok: false, error: settled.detail ?? 'in-game error' }
     }
     if (settled.result === 'timeout') {
-      return { ok: false, error: 'operation timed out' }
+      // Name the op so a hang is identifiable in the logs/retry (the mod fast-fails most
+      // stuck cases via [ERROR]; this settle timeout is the backstop for the rest).
+      return { ok: false, error: `operation '${op}' timed out (the target may be unreachable — walk/scan and try a different spot)` }
     }
     return { ok: false, error: 'operation was cancelled' }
   }

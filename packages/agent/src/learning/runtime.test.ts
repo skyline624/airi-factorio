@@ -48,6 +48,12 @@ describe('createOps', () => {
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`remote.call('autorio_operations','walk_to_entity','iron-ore',50)`))
   })
 
+  it('names the op in the error when a settling op times out', async () => {
+    const bus = createSettleBus(15)
+    const ops = createOps({ raw: async () => '[true]', settleBus: bus })
+    await expect(ops.walkToEntity('iron-ore', 50)).resolves.toEqual({ ok: false, error: expect.stringContaining('walk_to_entity') })
+  })
+
   it('propagates an in-game error from settle', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
