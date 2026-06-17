@@ -1182,7 +1182,10 @@ function state_moving_items(player: LuaPlayer) {
     }
 
     nearby_entities
-      .filter(it => it.can_insert({ name: parameters.item_name }))
+      // `.valid` guard FIRST: an entity reference can go stale within on_tick (destroyed by
+      // a raised event, player disconnect, etc.) and calling can_insert on an invalid
+      // LuaEntity raises a non-recoverable error that crashes the whole server.
+      .filter(it => it.valid && it.can_insert({ name: parameters.item_name }))
       .map((entity) => {
         const max_index = entity.get_max_inventory_index()
         const inventories: LuaInventory[] = []
@@ -1218,6 +1221,7 @@ function state_moving_items(player: LuaPlayer) {
   }
   else {
     nearby_entities
+      .filter(it => it.valid)
       .map((entity) => {
         const max_index = entity.get_max_inventory_index()
         const inventories: LuaInventory[] = []
@@ -1237,7 +1241,7 @@ function state_moving_items(player: LuaPlayer) {
           return
         }
 
-        if (!player_inventory.can_insert({ name: parameters.item_name })) {
+        if (!player_inventory.valid || !player_inventory.can_insert({ name: parameters.item_name })) {
           log(`[AUTORIO] Cannot insert ${parameters.item_name} into player inventory, skipping`)
           return
         }
