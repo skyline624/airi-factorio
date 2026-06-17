@@ -34,6 +34,8 @@ function mockOps(): Ops {
     placeFurnaceAtDrill: async () => ({ ok: true }),
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
+    connect: async () => ({ ok: true }),
+    placeNextTo: async () => ({ ok: true }),
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],

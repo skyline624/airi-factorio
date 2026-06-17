@@ -715,6 +715,184 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ ok: true, furnace: use_name, x: math.floor(ent.position.x * 10) / 10, y: math.floor(ent.position.y * 10) / 10, reclaimed }))
       return true
     },
+    // PLACEMENT PRIMITIVE (FLE connect_entities): lay a connection from (sx,sy) to (ex,ey)
+    // along an L-path. `kind`='belt' (transport-belts oriented toward the flow), 'pipe'
+    // (pipes auto-connect, no facing), or 'power' (electric poles spaced under their wire
+    // reach so the chain auto-connects). The mod resolves every tile/facing/spacing — the
+    // agent just gives the two endpoints (read from scan) and the kind.
+    connect_entities: (sx: number, sy: number, ex: number, ey: number, kind: string, name: string | undefined) => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      const is_belt = kind === 'belt'
+      const is_pipe = kind === 'pipe'
+      const is_power = kind === 'power'
+      if (!is_belt && !is_pipe && !is_power) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `unknown kind '${kind}' (use belt|pipe|power)` }))
+        return false
+      }
+      let use_name = name
+      if (use_name === undefined || use_name === '') {
+        use_name = is_belt ? 'transport-belt' : (is_pipe ? 'pipe' : 'small-electric-pole')
+      }
+      if (prototypes.entity[use_name] === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `unknown entity '${use_name}'` }))
+        return false
+      }
+      if (inv.get_item_count(use_name) === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${use_name} in inventory for the ${kind} connection` }))
+        return false
+      }
+
+      function snap(v: number): number {
+        return math.floor(v) + 0.5
+      }
+      // Ordered L-path: horizontal leg then vertical.
+      const full_path: Array<{ x: number, y: number }> = [{ x: snap(sx), y: snap(sy) }]
+      let cx = snap(sx)
+      let cy = snap(sy)
+      const tex = snap(ex)
+      const tey = snap(ey)
+      while (cx !== tex) {
+        cx += cx < tex ? 1 : -1
+        full_path.push({ x: cx, y: cy })
+      }
+      while (cy !== tey) {
+        cy += cy < tey ? 1 : -1
+        full_path.push({ x: cx, y: cy })
+      }
+
+      // Power poles don't sit on every tile — subsample the path by (wire reach - 1) so each
+      // placed pole is within wire range of the next and they auto-connect on placement.
+      let tiles = full_path
+      if (is_power) {
+        const reach = prototypes.entity[use_name].get_max_wire_distance()
+        const step = math.max(1, math.floor((reach !== undefined && reach > 0 ? reach : 7.5)) - 1)
+        tiles = []
+        for (let i = 0; i < full_path.length; i += step) {
+          tiles.push(full_path[i])
+        }
+        const last = full_path[full_path.length - 1]
+        const lt = tiles[tiles.length - 1]
+        if (lt === undefined || lt.x !== last.x || lt.y !== last.y) {
+          tiles.push(last)
+        }
+      }
+
+      function belt_dir(ax: number, ay: number, bx: number, by: number): defines.direction {
+        if (bx > ax) {
+          return defines.direction.east
+        }
+        if (bx < ax) {
+          return defines.direction.west
+        }
+        if (by > ay) {
+          return defines.direction.south
+        }
+        return defines.direction.north
+      }
+
+      let placed = 0
+      let reused = 0
+      const blocked: Array<{ x: number, y: number }> = []
+
+      for (let i = 0; i < tiles.length; i++) {
+        const tile = tiles[i]
+        const dir = is_belt
+          ? (i < tiles.length - 1
+              ? belt_dir(tile.x, tile.y, tiles[i + 1].x, tiles[i + 1].y)
+              : (tiles.length > 1 ? belt_dir(tiles[i - 1].x, tiles[i - 1].y, tile.x, tile.y) : defines.direction.east))
+          : defines.direction.north
+
+        // Reuse an entity already on the tile (re-orient a belt; keep a pole/pipe) — don't fail.
+        const here = is_belt
+          ? surface.find_entities_filtered({ position: tile, radius: 0.1, type: 'transport-belt' })
+          : surface.find_entities_filtered({ position: tile, radius: 0.3, name: use_name })
+        if (here.length > 0) {
+          if (is_belt) {
+            here[0].direction = dir
+          }
+          reused += 1
+          continue
+        }
+
+        if (inv.get_item_count(use_name) === 0) {
+          blocked.push(tile)
+          continue
+        }
+        const can = surface.can_place_entity({ name: use_name, position: tile, direction: dir, force: player.force, build_check_type: defines.build_check_type.manual })
+        if (!can) {
+          blocked.push(tile)
+          continue
+        }
+        const ent = surface.create_entity({ name: use_name, position: tile, direction: dir, force: player.force, raise_built: true, player })
+        if (ent === undefined) {
+          blocked.push(tile)
+          continue
+        }
+        inv.remove({ name: use_name, count: 1 })
+        placed += 1
+      }
+
+      const ok = blocked.length === 0 && placed + reused > 0
+      log(`[AUTORIO] connect_entities ${kind}/${use_name}: placed=${placed} reused=${reused} blocked=${blocked.length}`)
+      rcon.print(helpers.table_to_json({ ok, kind, entity: use_name, placed, reused, blocked }))
+      return ok
+    },
+    // PLACEMENT PRIMITIVE (FLE place_entity_next_to): place `entity_name` on a free tile
+    // adjacent to the nearest `target_name` (the mod finds the spot — the agent doesn't
+    // compute coords). e.g. an assembler next to a chest, a lab next to a pole.
+    place_next_to: (entity_name: string, target_name: string, _side: string | undefined) => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      if (prototypes.entity[entity_name] === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `unknown entity '${entity_name}'` }))
+        return false
+      }
+      if (inv.get_item_count(entity_name) === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${entity_name} in inventory` }))
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+      const filter = prototypes.entity[target_name] !== undefined
+        ? { name: target_name, position: pp, radius: 48 }
+        : { type: target_name, position: pp, radius: 48 }
+      const targets = surface.find_entities_filtered(filter)
+      if (targets.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${target_name} within 48 tiles to place next to` }))
+        return false
+      }
+      const target = get_nearest_entity(player, targets)
+      if (target === undefined || target === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${target_name} found` }))
+        return false
+      }
+      // Nearest free, non-colliding tile around the target (search outward from its centre).
+      const pos = surface.find_non_colliding_position(entity_name, target.position, 6, 0.5)
+      if (pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no free tile next to ${target_name} for a ${entity_name}` }))
+        return false
+      }
+      const ent = surface.create_entity({ name: entity_name, position: pos, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+      inv.remove({ name: entity_name, count: 1 })
+      log(`[AUTORIO] Placed ${entity_name} next to ${target_name} at (${pos.x},${pos.y})`)
+      rcon.print(helpers.table_to_json({ ok: true, entity: entity_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, status: status_name(ent.status) }))
+      return true
+    },
     get_inventory_items: (player_id: number) => {
       rcon.print(serpent.block(get_inventory_items(player_id)))
       return true

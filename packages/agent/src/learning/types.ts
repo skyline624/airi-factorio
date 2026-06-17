@@ -208,6 +208,10 @@ export interface Ops {
   placeBeltLine: (startX: number, startY: number, endX: number, endY: number, beltName?: string) => Promise<OpResult>
   /** Place a correctly-ORIENTED inserter between two machines so items flow `from` -> `to` (the mod computes the tile + facing). `inserterName` defaults to 'burner-inserter' (needs coal, no power). e.g. furnace plates onto a belt: `placeInserterBetween('stone-furnace','transport-belt')`. PREFER this over placeAt for inserters. */
   placeInserterBetween: (fromName: string, toName: string, inserterName?: string) => Promise<OpResult>
+  /** Connect (startX,startY) -> (endX,endY) along an L-path; the mod resolves every tile/facing/spacing. `kind`='belt' (belts oriented toward the flow), 'pipe' (auto-connecting pipes), or 'power' (electric poles spaced so the chain auto-connects). Take endpoints from `scan()`. Returns `{ok, data:{placed,reused,blocked:[{x,y}]}}`; `ok:false` if a tile was blocked (mine the obstacle / reroute). e.g. wire a lab to a steam-engine: `connect(engineX,engineY, labX,labY, 'power')`. */
+  connect: (startX: number, startY: number, endX: number, endY: number, kind?: 'belt' | 'pipe' | 'power', name?: string) => Promise<OpResult>
+  /** Place `entity` on a free tile ADJACENT to the nearest `targetName` machine (the mod finds the spot — don't compute coords). e.g. `placeNextTo('assembling-machine-1','iron-chest')`, `placeNextTo('lab','small-electric-pole')`. Returns `{ok, data:{x,y,status}}`. */
+  placeNextTo: (entity: string, targetName: string, side?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   /** Set the recipe of the nearest assembling-machine — it produces NOTHING without one (and assemblers need ELECTRICITY). Place the assembler, walk to it, then `setRecipe('iron-gear-wheel')`. This is how you AUTOMATE an intermediate instead of hand-crafting it. */

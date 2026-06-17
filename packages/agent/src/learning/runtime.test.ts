@@ -189,6 +189,27 @@ describe('createOps', () => {
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_inserter_between','stone-furnace','transport-belt','burner-inserter'`))
   })
 
+  it('connect dispatches connect_entities with endpoints + kind (default belt, nil name)', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"kind":"power","entity":"small-electric-pole","placed":3,"reused":0,"blocked":[]}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.connect(10, 4, 22, 4, 'power')).resolves.toEqual({ ok: true, data: { placed: 3, reused: 0, blocked: [] } })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'connect_entities',10,4,22,4,'power',nil`))
+  })
+
+  it('connect formats the blocked tiles on a partial belt connection', async () => {
+    const ops = createOps({ raw: async () => '{"ok":false,"kind":"belt","placed":2,"reused":0,"blocked":[{"x":12,"y":4}]}', settleBus: createSettleBus(1000) })
+    const r = await ops.connect(10, 4, 14, 4, 'belt')
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('(12,4)')
+  })
+
+  it('placeNextTo dispatches place_next_to and returns the placed tile + status', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"entity":"lab","x":6,"y":7,"status":"no_power"}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeNextTo('lab', 'small-electric-pole')).resolves.toEqual({ ok: true, data: { x: 6, y: 7, status: 'no_power' } })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_next_to','lab','small-electric-pole',nil`))
+  })
+
   it('reports a clear error when ops.skill is called before the library is wired', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
@@ -258,6 +279,8 @@ function makeMockOps(): Ops {
     placeFurnaceAtDrill: async () => ({ ok: true }),
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
+    connect: async () => ({ ok: true }),
+    placeNextTo: async () => ({ ok: true }),
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],

@@ -302,6 +302,29 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_inserter_between',${luaArg(fromName)},${luaArg(toName)},${luaArg(inserterName)})`))
       return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'place_inserter_between failed' }
     },
+    connect: async (startX: number, startY: number, endX: number, endY: number, kind = 'belt', name?: string): Promise<OpResult> => {
+      bumpOpCount()
+      const nameArg = (name && name.length) ? luaArg(name) : 'nil'
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, placed?: number, reused?: number, blocked?: Array<{ x: number, y: number }> }>(
+        await deps.raw(`/c remote.call('autorio_tools','connect_entities',${startX},${startY},${endX},${endY},${luaArg(kind)},${nameArg})`),
+      )
+      if (!d || typeof d !== 'object') {
+        return { ok: false, error: 'connect failed' }
+      }
+      const blocked = Array.isArray(d.blocked) ? d.blocked : []
+      const data = { placed: d.placed ?? 0, reused: d.reused ?? 0, blocked }
+      if (d.ok === true) {
+        return { ok: true, data }
+      }
+      const where = blocked.length > 0 ? ` (blocked at ${blocked.map(t => `(${t.x},${t.y})`).join(', ')})` : ''
+      return { ok: false, error: (d.error ?? `connection incomplete: placed ${data.placed}, ${blocked.length} tile(s) blocked`) + where, data }
+    },
+    placeNextTo: async (entity: string, targetName: string, side?: string): Promise<OpResult> => {
+      bumpOpCount()
+      const sideArg = (side && side.length) ? luaArg(side) : 'nil'
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, x?: number, y?: number, status?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_next_to',${luaArg(entity)},${luaArg(targetName)},${sideArg})`))
+      return (d && d.ok === true) ? { ok: true, data: { x: d.x, y: d.y, status: d.status } } : { ok: false, error: (d && d.error) ? d.error : 'place_next_to failed' }
+    },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     setRecipe: async (recipe: string): Promise<OpResult> => {

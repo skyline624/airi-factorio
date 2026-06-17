@@ -16,6 +16,8 @@ You almost never compute tile coordinates. For each build there is a **placement
 - Furnace fed by a drill → `await ops.placeFurnaceAtDrill()` (covers the nearest drill's output tile; idempotent).
 - A belt line → `await ops.placeBeltLine(startX, startY, endX, endY)` (snaps + orients every belt along an L-path).
 - An inserter moving items between two machines → `await ops.placeInserterBetween('stone-furnace', 'transport-belt')` (computes the tile + facing).
+- A connection between two points → `await ops.connect(startX, startY, endX, endY, kind)` with `kind`='belt' / 'pipe' / 'power' (the mod orients belts, auto-connects pipes, spaces poles). e.g. wire a lab to a steam-engine with `'power'`.
+- An entity beside a machine → `await ops.placeNextTo('assembling-machine-1', 'iron-chest')` (the mod finds a free adjacent tile).
 - Steam electricity → `await ops.buildSteamPower()` (places + fluid-connects pump→boiler→engine, fuels, wires a pole).
 
 **Use these primitives.** You decide the INTENT (which resource, which machines to connect); the mod resolves the tile. Only fall back to raw `placeAt(name, {x,y})` for a layout no primitive covers (then read a ready coord from `placementSpots`/`drill_outputs`/`pump_spots` — never count the ASCII ruler).
@@ -53,6 +55,8 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.placeFurnaceAtDrill(furnaceName?)` — put a furnace ON the nearest drill's output tile (hands-free feed; rung 2). Idempotent. Then fuel both with coal.
 - `await ops.placeBeltLine(startX, startY, endX, endY, beltName?)` — lay an L-shaped line of aligned belts. Returns `data:{placed,reused,blocked:[{x,y}]}`; `ok:false` if a tile was blocked (mine the obstacle / reroute).
 - `await ops.placeInserterBetween(fromName, toName, inserterName?)` — place a correctly-oriented inserter so items flow `from`→`to` (defaults `'burner-inserter'`, needs coal). e.g. `placeInserterBetween('stone-furnace','transport-belt')`.
+- `await ops.connect(startX, startY, endX, endY, kind?, name?)` — lay a connection along an L-path: `kind`='belt' (oriented belts), 'pipe' (auto-connecting pipes), 'power' (electric poles spaced to auto-connect). Endpoints from `scan()`. Returns `data:{placed,reused,blocked:[{x,y}]}`; `ok:false` if a tile was blocked. e.g. `connect(engX,engY, labX,labY, 'power')`.
+- `await ops.placeNextTo(entity, targetName, side?)` — place `entity` on a free tile adjacent to the nearest `targetName` (the mod finds the spot). e.g. `placeNextTo('lab','small-electric-pole')`. Returns `data:{x,y,status}`.
 - `await ops.buildSteamPower()` — ONE-CALL steam power: places + fluid-connects pump→boiler→engine, fuels the boiler, wires a pole. Walk NEXT TO water first (`findNearest('water')` → `walkTo`) and hold 1 offshore-pump + 1 boiler + 1 steam-engine + ~10 coal. Returns `{ok, pump, boiler, engine, …}`.
 
 **Perception & knowledge (read off the live game — never recall from memory)**
