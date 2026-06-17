@@ -271,6 +271,37 @@ export function createOps(deps: OpsDeps): Ops {
       }
       return runOp('place_entity_at', [entityName, at.x, at.y, at.direction ?? 'north'])
     },
+    placeDrillOn: async (resource: string, drillName = 'burner-mining-drill'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, mining?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_drill_on',${luaArg(resource)},${luaArg(drillName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { mining: d.mining } } : { ok: false, error: (d && d.error) ? d.error : 'place_drill_on failed' }
+    },
+    placeFurnaceAtDrill: async (furnaceName = 'stone-furnace'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, reclaimed?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_furnace_at_drill',${luaArg(furnaceName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { reclaimed: d.reclaimed ?? 0 } } : { ok: false, error: (d && d.error) ? d.error : 'place_furnace_at_drill failed' }
+    },
+    placeBeltLine: async (startX: number, startY: number, endX: number, endY: number, beltName = 'transport-belt'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, placed?: number, reused?: number, blocked?: Array<{ x: number, y: number }> }>(
+        await deps.raw(`/c remote.call('autorio_tools','place_belt_line',${startX},${startY},${endX},${endY},${luaArg(beltName)})`),
+      )
+      if (!d || typeof d !== 'object') {
+        return { ok: false, error: 'place_belt_line failed' }
+      }
+      const blocked = Array.isArray(d.blocked) ? d.blocked : []
+      const data = { placed: d.placed ?? 0, reused: d.reused ?? 0, blocked }
+      if (d.ok === true) {
+        return { ok: true, data }
+      }
+      const where = blocked.length > 0 ? ` (blocked at ${blocked.map(t => `(${t.x},${t.y})`).join(', ')})` : ''
+      return { ok: false, error: (d.error ?? `belt line incomplete: placed ${data.placed}, ${blocked.length} tile(s) blocked`) + where, data }
+    },
+    placeInserterBetween: async (fromName: string, toName: string, inserterName = 'burner-inserter'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_inserter_between',${luaArg(fromName)},${luaArg(toName)},${luaArg(inserterName)})`))
+      return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'place_inserter_between failed' }
+    },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     setRecipe: async (recipe: string): Promise<OpResult> => {

@@ -153,6 +153,42 @@ describe('createOps', () => {
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'placement_spots','stone-furnace',nil,nil,8,'north'`))
   })
 
+  it('placeDrillOn dispatches place_drill_on and surfaces the mined resource', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"drill":"burner-mining-drill","x":53,"y":-15,"mining":"iron-ore"}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeDrillOn('iron-ore')).resolves.toEqual({ ok: true, data: { mining: 'iron-ore' } })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_drill_on','iron-ore','burner-mining-drill'`))
+  })
+
+  it('placeDrillOn propagates the mod error when it cannot seat the drill', async () => {
+    const raw = vi.fn(async () => '{"ok":false,"error":"no iron-ore under it"}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeDrillOn('iron-ore')).resolves.toEqual({ ok: false, error: 'no iron-ore under it' })
+  })
+
+  it('placeFurnaceAtDrill dispatches place_furnace_at_drill and returns reclaimed count', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"furnace":"stone-furnace","x":53,"y":-13,"reclaimed":1}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeFurnaceAtDrill()).resolves.toEqual({ ok: true, data: { reclaimed: 1 } })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_furnace_at_drill','stone-furnace'`))
+  })
+
+  it('placeBeltLine returns placed/reused/blocked and formats the blocked tiles on failure', async () => {
+    const ok = createOps({ raw: async () => '{"ok":true,"placed":8,"reused":0,"blocked":[]}', settleBus: createSettleBus(1000) })
+    await expect(ok.placeBeltLine(10, 4, 10, 12)).resolves.toEqual({ ok: true, data: { placed: 8, reused: 0, blocked: [] } })
+    const bad = createOps({ raw: async () => '{"ok":false,"placed":3,"reused":0,"blocked":[{"x":10,"y":7}]}', settleBus: createSettleBus(1000) })
+    const r = await bad.placeBeltLine(10, 4, 10, 12)
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('(10,7)')
+  })
+
+  it('placeInserterBetween dispatches place_inserter_between with from/to/inserter', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"inserter":"burner-inserter","x":5,"y":12,"direction":4}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeInserterBetween('stone-furnace', 'transport-belt')).resolves.toEqual({ ok: true })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_inserter_between','stone-furnace','transport-belt','burner-inserter'`))
+  })
+
   it('reports a clear error when ops.skill is called before the library is wired', async () => {
     const bus = createSettleBus(1000)
     const ops = createOps({ raw: async () => '[true]', settleBus: bus })
@@ -218,6 +254,10 @@ function makeMockOps(): Ops {
     describeEntity: async () => null,
     findNearest: async () => null,
     placementSpots: async () => ({ spots: [] }),
+    placeDrillOn: async () => ({ ok: true }),
+    placeFurnaceAtDrill: async () => ({ ok: true }),
+    placeBeltLine: async () => ({ ok: true }),
+    placeInserterBetween: async () => ({ ok: true }),
     craftPlan: async () => null,
     techFor: async () => null,
     usedIn: async () => [],

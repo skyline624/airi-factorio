@@ -1,4 +1,4 @@
-import type { LuaEntity, LuaForce, LuaPlayer, LuaSurface, MapPosition } from 'factorio:runtime'
+import type { BoundingBox, LuaEntity, LuaForce, LuaPlayer, LuaSurface, MapPosition } from 'factorio:runtime'
 import { direction_from_name } from './utils/direction'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
@@ -251,7 +251,8 @@ export function create_tools_remote_interface() {
       const surface = game.surfaces[1]
       const force = game.forces.player
       if (!prototypes.entity[entity_name]) {
-        return { spots: [], error: `unknown entity: ${entity_name}` }
+        rcon.print(helpers.table_to_json({ spots: [], error: `unknown entity: ${entity_name}` }))
+        return false
       }
       let ccx = cx
       let ccy = cy
@@ -261,7 +262,458 @@ export function create_tools_remote_interface() {
         ccy = pl !== undefined ? pl.position.y : 0
       }
       const dir = direction_from_name(direction_name ?? 'north')
-      return { spots: find_placeable_spots(surface, force, entity_name, ccx, ccy, radius, dir, 12) }
+      rcon.print(helpers.table_to_json({ spots: find_placeable_spots(surface, force, entity_name, ccx, ccy, radius, dir, 12) }))
+      return true
+    },
+    // PLACEMENT PRIMITIVE: place a correctly-oriented inserter between two machines so items
+    // flow from -> to. An inserter reaches 1 tile, so it must sit ADJACENT to `from`; the
+    // facing is read off the game's OWN pickup/drop geometry, not computed by the agent.
+    place_inserter_between: (from_name: string, to_name: string, inserter_name: string = 'burner-inserter') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+
+      let use_name = inserter_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('burner-inserter') > 0) {
+          use_name = 'burner-inserter'
+        }
+        else if (inv.get_item_count('inserter') > 0) {
+          use_name = 'inserter'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${inserter_name} (or any inserter) in inventory` }))
+          return false
+        }
+      }
+
+      function nearest_of(name: string) {
+        const filter = prototypes.entity[name] !== undefined
+          ? { name, position: pp, radius: 32 }
+          : { type: name, position: pp, radius: 32 }
+        const candidates = surface.find_entities_filtered(filter)
+        if (candidates.length === 0) {
+          return undefined
+        }
+        let best = candidates[0]
+        let bd = (best.position.x - pp.x) ** 2 + (best.position.y - pp.y) ** 2
+        for (const e of candidates) {
+          const d = (e.position.x - pp.x) ** 2 + (e.position.y - pp.y) ** 2
+          if (d < bd) {
+            bd = d
+            best = e
+          }
+        }
+        return best
+      }
+
+      const from = nearest_of(from_name)
+      const to = nearest_of(to_name)
+      if (from === undefined || to === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'from/to entity not found within 32 tiles' }))
+        return false
+      }
+
+      // An inserter only reaches 1 tile, so it must sit ADJACENT to `from` (not at the
+      // midpoint). Anchor it just outside `from` on the cardinal side toward `to`.
+      const ddx = to.position.x - from.position.x
+      const ddy = to.position.y - from.position.y
+      const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
+      const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
+      const anchor = { x: from.position.x + ux * 1.5, y: from.position.y + uy * 1.5 }
+      const pos = surface.find_non_colliding_position(use_name, anchor, 2, 0.5)
+      if (pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no free tile next to from to place an inserter' }))
+        return false
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: pos, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+
+      // Orient using the game's OWN pickup/drop geometry: pickup on `from`, drop toward `to`.
+      const fb = from.bounding_box
+      function inside_from(px: number, py: number): boolean {
+        return px >= fb.left_top.x && px <= fb.right_bottom.x && py >= fb.left_top.y && py <= fb.right_bottom.y
+      }
+      const dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
+      let best_dir = ent.direction
+      let best_score = -1e18
+      for (const d of dirs) {
+        ent.direction = d
+        const pick = ent.pickup_position
+        const drop = ent.drop_position
+        // strongly reward pickup landing INSIDE `from`; then reward drop being near `to`.
+        const d_drop = (drop.x - to.position.x) ** 2 + (drop.y - to.position.y) ** 2
+        const score = (inside_from(pick.x, pick.y) ? 1000 : 0) - d_drop
+        if (score > best_score) {
+          best_score = score
+          best_dir = d
+        }
+      }
+      ent.direction = best_dir
+
+      // VERIFY the connection actually works; if not, don't leave a dead inserter (or
+      // consume the item) — destroy it and report cleanly so the agent can adapt.
+      if (!inside_from(ent.pickup_position.x, ent.pickup_position.y)) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: `could not orient an inserter to pick from ${from_name} (is ${to_name} adjacent on a free side?)` }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} taking from ${from_name} toward ${to_name} at (${pos.x},${pos.y})`)
+      rcon.print(helpers.table_to_json({ ok: true, inserter: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, direction: best_dir }))
+      return true
+    },
+    // PLACEMENT PRIMITIVE: lay a straight L-shaped line of aligned belts from (start)
+    // to (end), each belt oriented toward the flow. Belts MUST sit on exact tile centres
+    // to connect, so — unlike the inserter — we cannot nudge them off a blocked tile.
+    // Instead we place every free tile, RE-ORIENT any belt already there (no wasted item),
+    // and report the blocked tiles so the LLM can mine the obstacle or reroute. The path
+    // is a simple L: horizontal leg first, then vertical.
+    place_belt_line: (start_x: number, start_y: number, end_x: number, end_y: number, belt_name: string = 'transport-belt') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      let use_name = belt_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('transport-belt') > 0) {
+          use_name = 'transport-belt'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${belt_name} (or transport-belt) in inventory` }))
+          return false
+        }
+      }
+
+      function snap(v: number): number {
+        return math.floor(v) + 0.5
+      }
+      const sx = snap(start_x)
+      const sy = snap(start_y)
+      const ex = snap(end_x)
+      const ey = snap(end_y)
+
+      // Ordered tile path: walk the horizontal leg, then the vertical leg (L-shape).
+      const path: Array<{ x: number, y: number }> = [{ x: sx, y: sy }]
+      let cx = sx
+      let cy = sy
+      while (cx !== ex) {
+        cx += cx < ex ? 1 : -1
+        path.push({ x: cx, y: cy })
+      }
+      while (cy !== ey) {
+        cy += cy < ey ? 1 : -1
+        path.push({ x: cx, y: cy })
+      }
+
+      function dir_to(ax: number, ay: number, bx: number, by: number): defines.direction {
+        if (bx > ax) {
+          return defines.direction.east
+        }
+        if (bx < ax) {
+          return defines.direction.west
+        }
+        if (by > ay) {
+          return defines.direction.south
+        }
+        return defines.direction.north
+      }
+
+      let placed = 0
+      let reused = 0
+      const blocked: Array<{ x: number, y: number }> = []
+
+      for (let i = 0; i < path.length; i++) {
+        const tile = path[i]
+        // Each belt points toward the NEXT tile; the last tile keeps the previous heading.
+        const dir = i < path.length - 1
+          ? dir_to(tile.x, tile.y, path[i + 1].x, path[i + 1].y)
+          : (path.length > 1 ? dir_to(path[i - 1].x, path[i - 1].y, tile.x, tile.y) : defines.direction.east)
+
+        // A belt already on this tile → just re-orient it (don't fail, don't waste an item).
+        const existing = surface.find_entities_filtered({ position: tile, radius: 0.1, type: 'transport-belt' })
+        if (existing.length > 0) {
+          existing[0].direction = dir
+          reused += 1
+          continue
+        }
+
+        if (inv.get_item_count(use_name) === 0) {
+          blocked.push(tile) // out of belts — the rest of the line is unfulfilled
+          continue
+        }
+
+        const can = surface.can_place_entity({
+          name: use_name,
+          position: tile,
+          direction: dir,
+          force: player.force,
+          build_check_type: defines.build_check_type.manual,
+        })
+        if (!can) {
+          blocked.push(tile)
+          continue
+        }
+
+        const ent = surface.create_entity({ name: use_name, position: tile, direction: dir, force: player.force, raise_built: true, player })
+        if (ent === undefined) {
+          blocked.push(tile)
+          continue
+        }
+        inv.remove({ name: use_name, count: 1 })
+        placed += 1
+      }
+
+      const ok = blocked.length === 0 && placed + reused > 0
+      log(`[AUTORIO] place_belt_line ${use_name}: placed=${placed} reused=${reused} blocked=${blocked.length}`)
+      rcon.print(helpers.table_to_json({ ok, belt: use_name, placed, reused, blocked }))
+      return ok
+    },
+    // PLACEMENT PRIMITIVE: place a mining drill on the nearest patch of a SPECIFIC resource.
+    // placeEntity's auto-snap grabs the nearest resource of ANY type, so a drill meant for
+    // iron lands on a closer stone patch and the furnace behind it ends up making bricks.
+    // This snaps onto the resource the agent NAMED and VERIFIES the drill actually mines it
+    // (mining_target resolves immediately, unlike drop_target which needs fuel) — else it
+    // destroys the drill and fails cleanly instead of leaving a wrong-resource drill.
+    place_drill_on: (resource_name: string, drill_name: string = 'burner-mining-drill') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      // Guard against an unknown resource name (find_entities_filtered{name=...} throws on one).
+      if (prototypes.entity[resource_name] === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `unknown resource '${resource_name}'` }))
+        return false
+      }
+      const surface = player.surface
+      const pp = player.position
+
+      let use_name = drill_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('burner-mining-drill') > 0) {
+          use_name = 'burner-mining-drill'
+        }
+        else if (inv.get_item_count('electric-mining-drill') > 0) {
+          use_name = 'electric-mining-drill'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${drill_name} (or any mining drill) in inventory` }))
+          return false
+        }
+      }
+
+      const resources = surface.find_entities_filtered({ name: resource_name, position: pp, radius: 200 })
+      if (resources.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no ${resource_name} within 200 tiles (walk closer first)` }))
+        return false
+      }
+      let ore = resources[0]
+      let bd = (ore.position.x - pp.x) ** 2 + (ore.position.y - pp.y) ** 2
+      for (const r of resources) {
+        const d = (r.position.x - pp.x) ** 2 + (r.position.y - pp.y) ** 2
+        if (d < bd) {
+          bd = d
+          ore = r
+        }
+      }
+
+      // Snap onto the patch: search outward FROM the ore tile so the drill covers it.
+      const pos = surface.find_non_colliding_position(use_name, ore.position, 6, 0.5)
+      if (pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no free tile on the ${resource_name} patch to seat a ${use_name}` }))
+        return false
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: pos, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+
+      // VERIFY the drill physically covers the intended resource. mining_target is NOT
+      // populated synchronously at create_entity (it needs a tick, exactly like drop_target),
+      // so we can't read it here — instead check the resources under the drill's footprint.
+      // If the named resource isn't there, the snap landed on the wrong patch: destroy + fail.
+      const bb = ent.bounding_box
+      const area = {
+        left_top: { x: bb.left_top.x - 0.4, y: bb.left_top.y - 0.4 },
+        right_bottom: { x: bb.right_bottom.x + 0.4, y: bb.right_bottom.y + 0.4 },
+      }
+      let on_target = false
+      for (const r of surface.find_entities_filtered({ area, type: 'resource' })) {
+        if (r.name === resource_name) {
+          on_target = true
+          break
+        }
+      }
+      if (!on_target) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: `could not seat the drill ON ${resource_name} (no ${resource_name} under it); walk onto the ${resource_name} patch and retry` }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} mining ${resource_name} at (${pos.x},${pos.y})`)
+      rcon.print(helpers.table_to_json({ ok: true, drill: use_name, x: math.floor(pos.x * 10) / 10, y: math.floor(pos.y * 10) / 10, mining: resource_name }))
+      return true
+    },
+    // PLACEMENT PRIMITIVE: put a furnace ON a drill's output tile so the drill feeds it
+    // hands-free (automation rung 2). The exact 2x2-furnace-over-the-drop-tile geometry is
+    // where the LLM fails — it hardcodes coords that miss or collide, leaving misplaced
+    // furnaces that then block the correct spot. This enumerates the covering centres,
+    // is IDEMPOTENT (a furnace already covering the drop = success), and RECLAIMS the
+    // agent's own misplaced furnaces / dropped items blocking the spot instead of failing.
+    place_furnace_at_drill: (furnace_name: string = 'stone-furnace') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      let use_name = furnace_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('stone-furnace') > 0) {
+          use_name = 'stone-furnace'
+        }
+        else if (inv.get_item_count('steel-furnace') > 0) {
+          use_name = 'steel-furnace'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${furnace_name} (or any furnace) in inventory` }))
+          return false
+        }
+      }
+
+      const drills = surface.find_entities_filtered({ position: player.position, radius: 48, type: 'mining-drill' })
+      if (drills.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drill = get_nearest_entity(player, drills)
+      if (drill === undefined || drill === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drop = drill.drop_position
+      const dc = drill.position
+      // The drill feeds whatever occupies the drop TILE (not the exact drop point). Test
+      // coverage at the tile CENTRE — a furnace's collision box is inset, so the exact
+      // drop point can sit just outside it even when the furnace correctly covers the tile.
+      const dtx = math.floor(drop.x) + 0.5
+      const dty = math.floor(drop.y) + 0.5
+
+      function covers(box: BoundingBox, px: number, py: number): boolean {
+        return px >= box.left_top.x && px <= box.right_bottom.x && py >= box.left_top.y && py <= box.right_bottom.y
+      }
+
+      // Idempotent: a furnace already covering the drop tile means the feed is set.
+      for (const f of surface.find_entities_filtered({ position: drop, radius: 1.5, type: 'furnace' })) {
+        if (covers(f.bounding_box, dtx, dty)) {
+          rcon.print(helpers.table_to_json({ ok: true, furnace: f.name, x: math.floor(f.position.x * 10) / 10, y: math.floor(f.position.y * 10) / 10, note: 'already on the drill output' }))
+          return true
+        }
+      }
+
+      // Candidate 2x2 furnace centres whose footprint covers the drop tile.
+      const candidates: Array<{ x: number, y: number }> = []
+      for (const cx of [math.floor(drop.x), math.ceil(drop.x)]) {
+        for (const cy of [math.floor(drop.y), math.ceil(drop.y)]) {
+          if (math.abs(drop.x - cx) >= 1 || math.abs(drop.y - cy) >= 1) {
+            continue
+          }
+          candidates.push({ x: cx, y: cy })
+        }
+      }
+
+      function best_placeable(): { x: number, y: number } | undefined {
+        let chosen: { x: number, y: number } | undefined
+        let best_dist = -1
+        for (const c of candidates) {
+          // Use `script`, not `manual`: the agent's own character almost always stands on the
+          // drill's output tile (it just placed the drill from there), and `manual` counts the
+          // character's collision so EVERY covering centre reads unplaceable. `script` ignores
+          // the character (we shove it clear before create_entity below) while still rejecting
+          // real obstacles (the drill, water, other buildings).
+          if (!surface.can_place_entity({ name: use_name, position: c, force: player!.force, build_check_type: defines.build_check_type.script })) {
+            continue
+          }
+          // Furthest covering centre from the drill so the furnace extends away from it.
+          const dist = (c.x - dc.x) ** 2 + (c.y - dc.y) ** 2
+          if (dist > best_dist) {
+            best_dist = dist
+            chosen = c
+          }
+        }
+        return chosen
+      }
+
+      let chosen = best_placeable()
+      let reclaimed = 0
+
+      // Blocked: reclaim the agent's own MISplaced furnaces (none covers the drop, checked
+      // above) + dropped items near the spot, then retry. mine() returns their contents too.
+      if (chosen === undefined) {
+        for (const f of surface.find_entities_filtered({ position: drop, radius: 2.5, type: 'furnace' })) {
+          if (!f.mine({ inventory: inv, force: true, raise_destroyed: true })) {
+            f.destroy()
+          }
+          reclaimed += 1
+        }
+        for (const g of surface.find_entities_filtered({ position: drop, radius: 2, name: 'item-on-ground' })) {
+          g.destroy()
+        }
+        chosen = best_placeable()
+      }
+
+      if (chosen === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'could not seat a furnace on the drill output tile (still blocked after clearing)' }))
+        return false
+      }
+
+      // The character usually stands on the drill output (where the furnace must go). We
+      // validated the spot with `script` (character ignored); now move the character clear so
+      // create_entity doesn't trap it inside the new furnace, leaving it unable to walk.
+      const cp = player.position
+      if (player.character !== undefined && (cp.x - drop.x) ** 2 + (cp.y - drop.y) ** 2 < 6.25) {
+        const safe = surface.find_non_colliding_position('character', { x: dc.x, y: dc.y + 3 }, 12, 0.5)
+        if (safe !== undefined) {
+          player.teleport(safe)
+        }
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: chosen, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+      if (!covers(ent.bounding_box, dtx, dty)) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: 'placed furnace did not cover the drill output' }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} on the output of drill at (${dc.x},${dc.y}); reclaimed ${reclaimed} misplaced furnace(s)`)
+      rcon.print(helpers.table_to_json({ ok: true, furnace: use_name, x: math.floor(ent.position.x * 10) / 10, y: math.floor(ent.position.y * 10) / 10, reclaimed }))
+      return true
     },
     get_inventory_items: (player_id: number) => {
       rcon.print(serpent.block(get_inventory_items(player_id)))
