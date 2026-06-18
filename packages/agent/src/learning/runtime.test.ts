@@ -137,6 +137,32 @@ describe('createOps', () => {
     expect(res.resources['iron-ore']?.count).toBe(842)
   })
 
+  it('getEntity parses rich machine detail (recipe/missingIngredients) and dispatches floored coords', async () => {
+    const raw = vi.fn(async () => '{"name":"assembling-machine-1","type":"assembling-machine","x":10,"y":4,"direction":"north","status":"item_ingredient_shortage","recipe":"iron-gear-wheel","input":[{"name":"iron-plate","count":1}],"missingIngredients":["iron-plate (have 1/2)"]}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const d = await ops.getEntity({ x: 10.7, y: 4.9 })
+    expect(d?.recipe).toBe('iron-gear-wheel')
+    expect(d?.missingIngredients).toEqual(['iron-plate (have 1/2)'])
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'get_entity',10,4`))
+  })
+
+  it('getEntity returns null when there is no machine at the tile', async () => {
+    const ops = createOps({ raw: async () => '{}', settleBus: createSettleBus(1000) })
+    await expect(ops.getEntity({ x: 0, y: 0 })).resolves.toBeNull()
+  })
+
+  it('launchRocket dispatches launch_rocket and resolves ok on a successful launch', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"x":40,"y":-12}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.launchRocket()).resolves.toEqual({ ok: true })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`remote.call('autorio_tools','launch_rocket')`))
+  })
+
+  it('launchRocket surfaces the no-finished-rocket error', async () => {
+    const ops = createOps({ raw: async () => '{"ok":false,"error":"silo at (40,-12) has no finished rocket yet — feed it rocket parts and wait for assembly","rocketParts":12}', settleBus: createSettleBus(1000) })
+    await expect(ops.launchRocket()).resolves.toEqual({ ok: false, error: expect.stringContaining('no finished rocket') })
+  })
+
   it('placementSpots parses the spots list and passes name/center/direction in the call', async () => {
     const raw = vi.fn(async () => '{"spots":[{"x":53,"y":-15},{"x":54,"y":-15}]}')
     const ops = createOps({ raw, settleBus: createSettleBus(1000) })
@@ -263,6 +289,7 @@ function makeMockOps(): Ops {
     moveItems: ok,
     craftItem: ok,
     setRecipe: ok,
+    launchRocket: ok,
     buildSteamPower: async () => ({ ok: true }),
     researchTechnology: ok,
     wait: ok,
@@ -273,6 +300,7 @@ function makeMockOps(): Ops {
     renderMap: async () => null,
     getRecipe: async () => null,
     describeEntity: async () => null,
+    getEntity: async () => null,
     findNearest: async () => null,
     placementSpots: async () => ({ spots: [] }),
     placeDrillOn: async () => ({ ok: true }),

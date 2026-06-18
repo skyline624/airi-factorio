@@ -1,4 +1,4 @@
-import type { GameState } from './types'
+import type { GameState, SuccessCheck } from './types'
 import curriculumPrompt from '../llm/prompt-curriculum.md?raw'
 import { summarizeState } from './action'
 import { parseJsonLoose } from './json'
@@ -27,6 +27,38 @@ export interface ProposedObjective {
   reasoning?: string
   objective: string
   context: string
+  /** Machine-verifiable success criterion → the critic is fully deterministic (no LLM). Undefined if the curriculum gave none/malformed (the attempt falls back to the heuristic precheck). */
+  successCheck?: SuccessCheck
+}
+
+/** Validate the curriculum's success criterion; undefined (→ heuristic fallback) if malformed. */
+function parseSuccessCheck(raw: unknown): SuccessCheck | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined
+  }
+  const c = raw as Record<string, unknown>
+  const kind = c.kind
+  if (kind !== 'acquire' && kind !== 'produce' && kind !== 'build' && kind !== 'research') {
+    return undefined
+  }
+  const out: SuccessCheck = { kind }
+  if (typeof c.item === 'string' && c.item.trim()) {
+    out.item = c.item.trim()
+  }
+  if (typeof c.entity === 'string' && c.entity.trim()) {
+    out.entity = c.entity.trim()
+  }
+  if (typeof c.count === 'number' && c.count > 0) {
+    out.count = Math.floor(c.count)
+  }
+  // The field the kind needs must be present, else treat as malformed (fall back to heuristic).
+  if ((kind === 'acquire' || kind === 'produce') && !out.item) {
+    return undefined
+  }
+  if (kind === 'build' && !out.entity) {
+    return undefined
+  }
+  return out
 }
 
 function buildMessage(input: CurriculumInput): string {
@@ -76,5 +108,6 @@ export async function proposeNextObjective(input: CurriculumInput): Promise<Prop
     reasoning: parsed.reasoning,
     objective: parsed.objective.trim(),
     context: typeof parsed.context === 'string' ? parsed.context.trim() : '',
+    successCheck: parseSuccessCheck((parsed as { successCheck?: unknown }).successCheck),
   }
 }

@@ -1,4 +1,4 @@
-import type { GameState } from './types'
+import type { GameState, SuccessCheck } from './types'
 
 /**
  * A deterministic pre-critic. Many objectives are MECHANICAL — "mine 20 iron
@@ -136,4 +136,54 @@ export function precheckVerdict(input: PrecheckInput): PrecheckResult {
 
   // Non-mechanical objective (find / scout / explore / unknown) — defer to the LLM.
   return { decided: false }
+}
+
+/**
+ * Evaluate the curriculum's EXPLICIT, machine-verifiable success criterion — the fully
+ * deterministic critic. Unlike `precheckVerdict` (which guesses the verb/target by parsing the
+ * objective text and defers anything status-laden), this is keyed off a structured `SuccessCheck`
+ * the curriculum emitted, so it always decides (PASS or FAIL) and never needs the LLM. A
+ * 'produce' check uses the force PRODUCTION counter delta — the FLE throughput signal that a
+ * machine genuinely WORKS — which is exactly the case `precheckVerdict` used to hand to the LLM.
+ * Returns `decided:false` only for an unknown/malformed kind, so the caller falls back.
+ */
+export function evaluateSuccessCheck(check: SuccessCheck, input: PrecheckInput): PrecheckResult {
+  const need = (typeof check.count === 'number' && check.count > 0) ? check.count : 1
+  const invGained = positiveDeltas(input.before.inventory, input.after.inventory)
+  const entGained = positiveDeltas(input.before.entities, input.after.entities)
+  const prodGained = (input.prodBefore && input.prodAfter) ? positiveDeltas(input.prodBefore, input.prodAfter) : {}
+
+  switch (check.kind) {
+    case 'acquire': {
+      const item = check.item ?? ''
+      // Gained in the inventory OR produced (smelted output sits in a furnace, not the hand).
+      const got = Math.max(invGained[item] ?? 0, prodGained[item] ?? 0)
+      return got >= need
+        ? { decided: true, success: true, critique: '', reasoning: `${item} +${got} (need ${need})` }
+        : { decided: true, success: false, critique: `Need ${need}× '${item}', only +${got} this objective. Gather/craft more and check ok after each op.`, reasoning: `${item} +${got} < ${need}` }
+    }
+    case 'produce': {
+      const item = check.item ?? ''
+      const got = prodGained[item] ?? 0
+      return got >= need
+        ? { decided: true, success: true, critique: '', reasoning: `produced ${item} +${got} (need ${need})` }
+        : { decided: true, success: false, critique: `Production of '${item}' did not rise by ${need} (only +${got}). Make the machine actually run: set its recipe, fuel/power it, feed its input, then wait and re-check.`, reasoning: `produced ${item} +${got} < ${need}` }
+    }
+    case 'build': {
+      const entity = check.entity ?? ''
+      const got = entGained[entity] ?? 0
+      return got >= need
+        ? { decided: true, success: true, critique: '', reasoning: `built ${entity} +${got} (need ${need})` }
+        : { decided: true, success: false, critique: `Did not build ${need}× '${entity}' (only +${got}). Walk within build reach and place it, checking ok.`, reasoning: `built ${entity} +${got} < ${need}` }
+    }
+    case 'research': {
+      const done = (input.after.researchedCount ?? 0) > (input.before.researchedCount ?? 0)
+      return done
+        ? { decided: true, success: true, critique: '', reasoning: 'a technology completed (researchedCount increased)' }
+        : { decided: true, success: false, critique: 'No technology completed. Ensure a powered lab with science packs, then start the research.', reasoning: 'researchedCount unchanged' }
+    }
+    default:
+      // Unknown/malformed kind — let the caller fall back to the heuristic precheck/LLM.
+      return { decided: false }
+  }
 }

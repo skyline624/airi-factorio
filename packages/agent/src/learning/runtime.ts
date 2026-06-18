@@ -1,5 +1,5 @@
 import type { SettleBus } from './settle-bus'
-import type { CraftPlan, EntityInfo, GameState, MapView, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, SteamPowerResult, TechInfo } from './types'
+import type { CraftPlan, EntityDetail, EntityInfo, GameState, MapView, NearestResult, OpResult, Ops, RecipeInfo, ScanResult, SettleResult, SteamPowerResult, TechInfo } from './types'
 import * as vm from 'node:vm'
 import { extractLastJsonLine } from './json'
 import { CAPTURE_STATE_COMMAND, parseGameState, parseScan } from './state'
@@ -202,6 +202,14 @@ export function createOps(deps: OpsDeps): Ops {
       cache?.describe.set(name, result)
       return result
     },
+    getEntity: async (at: { x: number, y: number }): Promise<EntityDetail | null> => {
+      bumpOpCount()
+      if (at === undefined || typeof at.x !== 'number' || typeof at.y !== 'number' || Number.isNaN(at.x) || Number.isNaN(at.y)) {
+        return null
+      }
+      const d = extractLastJsonLine<EntityDetail>(await deps.raw(`/c remote.call('autorio_tools','get_entity',${Math.floor(at.x)},${Math.floor(at.y)})`))
+      return (d && typeof d === 'object' && typeof d.name === 'string') ? d : null
+    },
     findNearest: async (name: string): Promise<NearestResult | null> => {
       bumpOpCount()
       const d = extractLastJsonLine<NearestResult>(await deps.raw(`/c remote.call('autorio_tools','find_nearest',${luaArg(name)})`))
@@ -331,6 +339,11 @@ export function createOps(deps: OpsDeps): Ops {
       bumpOpCount()
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','set_recipe',${luaArg(recipe)})`))
       return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'set_recipe failed' }
+    },
+    launchRocket: async (): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','launch_rocket')`))
+      return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'launch_rocket failed' }
     },
     buildSteamPower: async (): Promise<SteamPowerResult> => {
       bumpOpCount()

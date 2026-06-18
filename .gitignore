@@ -144,3 +144,5 @@ dist
 
 # Agent-generated learned skills (Voyager skill library — runtime artifacts)
 packages/agent/skills*
+# Local dedicated-server write dir (config.ini, saves, server-settings) — not source
+.factorio-server

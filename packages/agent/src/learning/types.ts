@@ -39,6 +39,24 @@ export interface Verdict {
   critique: string
 }
 
+/**
+ * A machine-verifiable success criterion the CURRICULUM attaches to each objective, so the
+ * critic is fully DETERMINISTIC — no LLM judgement, no round-trip. Evaluated against the
+ * before/after state diff + production counters (see `evaluateSuccessCheck`). This is the
+ * FLE-style move: a factory objective's success IS measurable (an item gained, a machine
+ * producing, an entity built, a tech researched), so we don't ask an LLM to guess.
+ */
+export interface SuccessCheck {
+  /** how completion is proven from state: 'acquire' (item gained in inventory/production), 'produce' (force production counter for the item rises — the throughput signal that a machine actually WORKS), 'build' (a new entity exists), 'research' (a technology completes). */
+  kind: 'acquire' | 'produce' | 'build' | 'research'
+  /** acquire/produce: the Factorio item name, e.g. 'iron-plate'. */
+  item?: string
+  /** build: the Factorio entity name, e.g. 'stone-furnace'. */
+  entity?: string
+  /** required amount gained/produced/built (default 1). */
+  count?: number
+}
+
 /** A learned skill: LLM-generated code plus metadata. (Consumed from step 4 on.) */
 export interface Skill {
   name: string
@@ -63,6 +81,40 @@ export interface ScanEntity {
   mining?: string
   /** mining drills only: total ore left in the drill's mining area. 0 = depleted (move on); a high number with status 'no_minable_resources' = the drill is mis-seated/off-patch, re-place it rather than rebuild. */
   oreUnder?: number
+}
+
+/**
+ * Deep per-entity detail from `ops.getEntity(at)` — an FLE-style rich entity, to DIAGNOSE one
+ * machine after `scan` flags a non-'working' status. Heavier than a scan row (recipe, machine
+ * inventories, fluid link state), so it's fetched on demand, one entity per call.
+ */
+export interface EntityDetail {
+  name: string
+  type: string
+  x: number
+  y: number
+  direction: string
+  status: string
+  /** crafting machines (assembler/furnace/chemical-plant/refinery/silo): the posed recipe, or 'none' (nothing set → it does nothing). */
+  recipe?: string
+  /** items waiting in the input/source slots. */
+  input?: { name: string, count: number }[]
+  /** items sitting in the output slots — a full output means downstream isn't pulling. */
+  output?: { name: string, count: number }[]
+  /** fuel slot contents (burner machines): empty here while status is no_fuel → feed it coal. */
+  fuel?: { name: string, count: number }[]
+  /** inserter only: where it picks up — read its facing off pickup vs drop. */
+  pickup?: { x: number, y: number }
+  /** inserter or mining-drill: the drop tile (drill = where ore lands; put a furnace/belt/chest there). */
+  drop?: { x: number, y: number }
+  /** mining drills only: the resource actually mined, or 'nothing'. */
+  mining?: string
+  /** mining drills only: ore left in the mining area (0 = depleted). */
+  oreUnder?: number
+  /** fluid handlers (boiler/engine/pump/refinery/chemical-plant/pipe): each fluidbox's per-connection link state. `linked:false` = the fluid hookup did NOT take → reroute the pipe. */
+  fluids?: { index: number, connections: { flow: string, linked: boolean }[] }[]
+  /** present when status is an item-ingredient shortage — exactly which item is short and by how much. */
+  missingIngredients?: string[]
 }
 
 /** Result of `ops.scan(radius)`: a structured local map for spatial reasoning + automation checks. */
@@ -182,6 +234,8 @@ export interface Ops {
   getRecipe: (name: string) => Promise<RecipeInfo | null>
   /** Look up a placeable entity's mechanics (type, energy/fuel need, tile size, what a drill mines). Null if not a known entity. */
   describeEntity: (name: string) => Promise<EntityInfo | null>
+  /** DIAGNOSE one machine: deep detail for the entity at/near a tile (posed recipe, input/output/fuel contents, fluid link state, which ingredient is short). Call when `scan` shows a status that isn't 'working' to learn WHY. Null if no machine there. */
+  getEntity: (at: { x: number, y: number }) => Promise<EntityDetail | null>
   /** Locate the NEAREST thing of a name far beyond scan range — ore/coal/water (water is a tile, scan never sees it). Null if none within ~400 tiles. */
   findNearest: (name: string) => Promise<NearestResult | null>
   /** Validated placeAt tiles for `name` near a point (defaults to your position) — pick one by INTENT (e.g. nearest to a drill output) instead of reading exact coords off the map ruler. `{spots:[{x,y}]}` nearest-first (≤12), empty if none placeable in range. Each spot is can_place-verified, so placeAt won't be rejected for being blocked. */
@@ -214,8 +268,10 @@ export interface Ops {
   placeNextTo: (entity: string, targetName: string, side?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
-  /** Set the recipe of the nearest assembling-machine — it produces NOTHING without one (and assemblers need ELECTRICITY). Place the assembler, walk to it, then `setRecipe('iron-gear-wheel')`. This is how you AUTOMATE an intermediate instead of hand-crafting it. */
+  /** Set the recipe of the nearest crafting machine within 20 tiles — assembler, chemical-plant OR oil-refinery (all entity-type 'assembling-machine'). It produces NOTHING without one (and needs ELECTRICITY). Place the machine, walk to it, then `setRecipe('iron-gear-wheel')` / `setRecipe('sulfuric-acid')`. This is how you AUTOMATE an intermediate or fluid product. */
   setRecipe: (recipe: string) => Promise<OpResult>
+  /** Launch the nearest rocket-silo's finished rocket (within 60 tiles). The silo must already HOLD a completed rocket — give it the rocket-part recipe + ingredients (it assembles automatically) and wait first. `{ok:false}` with `rocketParts` count if no rocket is ready. */
+  launchRocket: () => Promise<OpResult>
   /** Deterministically build a fluid-aligned steam-power chain in ONE call: places offshore-pump -> boiler -> steam-engine (alignment verified by the game), fuels the boiler with your coal, and wires a pole if you have one. Walk NEAR water first and hold the items (1 offshore-pump, 1 boiler, 1 steam-engine, coal). Use this instead of hand-placing the chain — the fluid faces are a fixed mechanism, not a layout you read off the map. */
   buildSteamPower: () => Promise<SteamPowerResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>

@@ -1,10 +1,10 @@
 import type { GenerateCodeInput, GeneratedCode, RetrievedSkill } from './action'
 import type { VerifyOptions } from './critic'
 import type { BatchedCapture } from './state'
-import type { GameState, Ops, ScanResult, Verdict } from './types'
+import type { GameState, Ops, ScanResult, SuccessCheck, Verdict } from './types'
 import { summarizeScan } from './action'
 import { lintSkillCode } from './lint'
-import { precheckVerdict } from './precheck'
+import { evaluateSuccessCheck, precheckVerdict } from './precheck'
 import { runSkill } from './runtime'
 import { diffState } from './state'
 
@@ -71,7 +71,7 @@ export function summarizeProductionDelta(before: Record<string, number> | null, 
  * code + execution error + critique. Returns once verified or the retry budget
  * is spent. `before` is captured once so the critic judges cumulative progress.
  */
-export async function attemptObjective(objective: string, context: string, deps: AttemptDeps): Promise<AttemptResult> {
+export async function attemptObjective(objective: string, context: string, deps: AttemptDeps, successCheck?: SuccessCheck): Promise<AttemptResult> {
   const maxRetries = deps.maxRetries ?? 4
   // `before` (objective start) is fixed so the critic judges CUMULATIVE progress;
   // `current` is refreshed each retry so the action LLM sees the latest world.
@@ -170,14 +170,21 @@ export async function attemptObjective(objective: string, context: string, deps:
     }
     const productionSummary = summarizeProductionDelta(prodBefore, prodAfter)
 
-    // Deterministic pre-critic: settle the mechanical objectives (mine/build/research)
-    // in code, skipping the critic-LLM round-trip. Ambiguous ones fall through to the LLM.
-    const pre = deps.deterministicCritic === false ? { decided: false as const } : precheckVerdict({ objective, before, after, prodBefore, prodAfter })
+    // Verdict, cheapest-first: (1) the curriculum's EXPLICIT machine-checkable criterion —
+    // fully deterministic, no LLM; (2) else the heuristic precheck (mine/build/research by
+    // text); (3) only objectives with NEITHER a check NOR a precheck decision (e.g. a reactive
+    // chat command, or a malformed check) reach the LLM critic. So a curriculum objective never
+    // pays a critic-LLM round-trip.
+    const pre = deps.deterministicCritic === false
+      ? { decided: false as const }
+      : (successCheck
+          ? evaluateSuccessCheck(successCheck, { objective, before, after, prodBefore, prodAfter })
+          : precheckVerdict({ objective, before, after, prodBefore, prodAfter }))
     const verdict: Verdict = pre.decided
       ? { success: pre.success ?? false, critique: pre.critique ?? '', reasoning: pre.reasoning }
       : await deps.verify({ objective, before, after, logs, scanSummary, productionSummary, model: deps.criticModel })
     if (pre.decided) {
-      deps.log?.(`  -> precheck ${verdict.success ? 'PASS' : 'FAIL'} (no critic LLM): ${pre.reasoning ?? ''}`)
+      deps.log?.(`  -> ${successCheck ? 'successCheck' : 'precheck'} ${verdict.success ? 'PASS' : 'FAIL'} (deterministic, no critic LLM): ${pre.reasoning ?? ''}`)
     }
     lastVerdict = verdict
 

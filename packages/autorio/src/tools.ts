@@ -1,4 +1,4 @@
-import type { BoundingBox, LuaEntity, LuaForce, LuaPlayer, LuaSurface, MapPosition } from 'factorio:runtime'
+import type { BoundingBox, LuaEntity, LuaForce, LuaPlayer, LuaRecipe, LuaSurface, MapPosition } from 'factorio:runtime'
 import { direction_from_name } from './utils/direction'
 import { get_nearest_entity } from './utils/entity'
 import { get_inventory_items } from './utils/inventory'
@@ -206,6 +206,106 @@ function drill_ore_under(surface: LuaSurface, drill: LuaEntity): number {
     total = total + r.amount
   }
   return math.floor(total)
+}
+
+// Deep, FLE-style detail for ONE entity, so the agent can DIAGNOSE a machine that isn't
+// 'working' (posed recipe, input/output/fuel contents, inserter/drill geometry, fluid link
+// state, which ingredient is short). Heavier than a scan_area row — fetched on demand per
+// entity to keep scan_area within a single RCON packet. camelCase keys match EntityDetail.
+function entity_detail(surface: LuaSurface, e: LuaEntity): Record<string, unknown> {
+  const rec: Record<string, unknown> = {
+    name: e.name,
+    type: e.type,
+    x: math.floor(e.position.x * 10) / 10,
+    y: math.floor(e.position.y * 10) / 10,
+    direction: name_from_direction(e.direction),
+    status: status_name(e.status),
+  }
+
+  // chemical-plant and oil-refinery have entity TYPE 'assembling-machine' (only their prototype
+  // name differs), so 'assembling-machine' already covers them. get_recipe() multi-returns
+  // (recipe, quality) — we only want the recipe.
+  const is_crafting = e.type === 'assembling-machine' || e.type === 'furnace' || e.type === 'rocket-silo'
+  let recipe: LuaRecipe | undefined
+  if (is_crafting) {
+    ;[recipe] = e.get_recipe()
+    rec.recipe = recipe !== undefined ? recipe.name : 'none'
+  }
+
+  // Machine inventories (input / output / fuel) as item lists; omit empties.
+  const input_inv = e.type === 'furnace'
+    ? e.get_inventory(defines.inventory.furnace_source)
+    : e.get_inventory(defines.inventory.assembling_machine_input)
+  if (input_inv !== undefined) {
+    const items = input_inv.get_contents().map(c => ({ name: c.name, count: c.count }))
+    if (items.length > 0) {
+      rec.input = items
+    }
+  }
+  const out_inv = e.get_output_inventory()
+  if (out_inv !== undefined) {
+    const items = out_inv.get_contents().map(c => ({ name: c.name, count: c.count }))
+    if (items.length > 0) {
+      rec.output = items
+    }
+  }
+  const fuel_inv = e.get_fuel_inventory()
+  if (fuel_inv !== undefined) {
+    const items = fuel_inv.get_contents().map(c => ({ name: c.name, count: c.count }))
+    if (items.length > 0) {
+      rec.fuel = items
+    }
+  }
+
+  // Inserter geometry (engine-computed; today emitted nowhere) — read facing off pickup vs drop.
+  if (e.type === 'inserter') {
+    rec.pickup = { x: math.floor(e.pickup_position.x * 10) / 10, y: math.floor(e.pickup_position.y * 10) / 10 }
+    rec.drop = { x: math.floor(e.drop_position.x * 10) / 10, y: math.floor(e.drop_position.y * 10) / 10 }
+  }
+
+  // Drill: the drop tile (where ore lands) + what it's actually mining.
+  if (e.type === 'mining-drill') {
+    rec.drop = { x: math.floor(e.drop_position.x * 10) / 10, y: math.floor(e.drop_position.y * 10) / 10 }
+    const mt = e.mining_target
+    rec.mining = mt !== undefined ? mt.name : 'nothing'
+    rec.oreUnder = drill_ore_under(surface, e)
+  }
+
+  // Fluidbox: per-connection link state (boilers/engines/pumps/refineries/chemical-plants/pipes).
+  // `linked:false` = the fluid hookup did NOT take (reroute the pipe). Contents (which fluid /
+  // how much) are intentionally omitted for now — the status (e.g. no_input_fluid) + link state
+  // already diagnose the main fluid failure, and reading box contents needs the index convention
+  // confirmed live first.
+  const fb = e.fluidbox
+  if (fb.length > 0) {
+    const fluids: Array<{ index: number, connections: Array<{ flow: string, linked: boolean }> }> = []
+    for (let i = 1; i <= fb.length; i++) {
+      const conns: Array<{ flow: string, linked: boolean }> = []
+      for (const c of fb.get_pipe_connections(i)) {
+        conns.push({ flow: c.flow_direction, linked: c.target !== undefined })
+      }
+      fluids.push({ index: i, connections: conns })
+    }
+    rec.fluids = fluids
+  }
+
+  // Which ITEM ingredient is short, when the status says so (the actionable bit FLE surfaces).
+  if (recipe !== undefined && e.status === defines.entity_status.item_ingredient_shortage) {
+    const missing: string[] = []
+    for (const ing of recipe.ingredients) {
+      if (ing.type === 'item') {
+        const have = input_inv !== undefined ? input_inv.get_item_count(ing.name) : 0
+        if (have < ing.amount) {
+          missing.push(`${ing.name} (have ${have}/${ing.amount})`)
+        }
+      }
+    }
+    if (missing.length > 0) {
+      rec.missingIngredients = missing
+    }
+  }
+
+  return rec
 }
 
 // Validated placeAt tiles for `entity_name` near (cx,cy), so the model picks WHERE to
@@ -1473,9 +1573,10 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ produced, consumed }))
       return true
     },
-    // Set the recipe on the nearest assembling-machine to the player. An assembler does
-    // NOTHING until it has a recipe (and power — assemblers are electric). This is what lets
-    // the agent AUTOMATE intermediates (gears, circuits) instead of hand-crafting them.
+    // Set the recipe on the nearest crafting machine within 20 tiles. The Factorio entity TYPE
+    // 'assembling-machine' INCLUDES chemical plants and oil refineries (only their prototype name
+    // differs), so this one handler automates intermediates (gears, circuits) AND fluid products
+    // (plastic, sulfuric acid, lubricant). A machine does NOTHING until it has a recipe (+ power).
     set_recipe: (recipe_name: string) => {
       const player = get_player()
       if (player === undefined) {
@@ -1489,16 +1590,24 @@ export function create_tools_remote_interface() {
       }
       const asms = player.surface.find_entities_filtered({ position: player.position, radius: 20, type: 'assembling-machine' })
       if (asms.length === 0) {
-        rcon.print(helpers.table_to_json({ ok: false, error: 'no assembling-machine within 20 tiles (place one first)' }))
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no crafting machine (assembler / chemical-plant / oil-refinery) within 20 tiles — place one first' }))
         return false
       }
       const asm = get_nearest_entity(player, asms)
       if (asm === undefined || asm === null) {
-        rcon.print(helpers.table_to_json({ ok: false, error: 'no assembling-machine found' }))
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no crafting machine found' }))
+        return false
+      }
+      // Reject a recipe the chosen machine can't make (e.g. a chemical recipe on a refinery, or
+      // an assembler recipe on a chemical plant) with a CLEAR message instead of letting
+      // set_recipe throw a cryptic Lua error that surfaces as an opaque op failure.
+      const cats = asm.prototype.crafting_categories
+      if (cats !== undefined && cats[recipe.category] !== true) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `nearest machine '${asm.name}' can't make recipe '${recipe_name}' (category '${recipe.category}') — walk to the right machine type first` }))
         return false
       }
       asm.set_recipe(recipe_name)
-      rcon.print(helpers.table_to_json({ ok: true, recipe: recipe_name, x: math.floor(asm.position.x * 10) / 10, y: math.floor(asm.position.y * 10) / 10 }))
+      rcon.print(helpers.table_to_json({ ok: true, recipe: recipe_name, machine: asm.name, x: math.floor(asm.position.x * 10) / 10, y: math.floor(asm.position.y * 10) / 10 }))
       return true
     },
     // Deterministic ONE-CALL steam power: places offshore-pump -> boiler -> steam-engine,
@@ -1637,6 +1746,54 @@ export function create_tools_remote_interface() {
         : (pole_placed ? 'pump -> boiler -> steam-engine built, fluid-connected and fueled, with an electric pole.' : 'pump -> boiler -> steam-engine built, fluid-connected and fueled. No electric pole in inventory — add a pole next to the engine to power a network.')
       log(`[AUTORIO] build_steam_power: ${note}`)
       rcon.print(helpers.table_to_json({ ok: engine !== undefined, pump: pump_info, boiler: boiler_info, engine: engine_info, coal: inserted, pole: pole_placed, note }))
+      return true
+    },
+    // Deep, FLE-style detail for the single machine at/nearest a tile (recipe, input/output/fuel
+    // contents, inserter/drill geometry, fluid link state, which ingredient is short). Sync (no
+    // task/settle). The agent calls this to DIAGNOSE a machine whose scan status isn't 'working'.
+    get_entity: (x: number, y: number) => {
+      const player = get_player()
+      const surface = player !== undefined ? player.surface : game.surfaces[1]
+      let target: LuaEntity | undefined
+      for (const e of surface.find_entities_filtered({ position: { x, y }, radius: 1.5 })) {
+        if (e.valid && e.name !== 'character') {
+          target = e
+          break
+        }
+      }
+      if (target === undefined) {
+        rcon.print('{}')
+        return false
+      }
+      rcon.print(helpers.table_to_json(entity_detail(surface, target)))
+      return true
+    },
+    // Launch the nearest rocket-silo's finished rocket. Sync (instant — no character motion).
+    // The silo must already HOLD a finished rocket: give it the rocket-part recipe + ingredients
+    // (it assembles automatically) and wait for the parts to complete first.
+    launch_rocket: () => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player' }))
+        return false
+      }
+      const silos = player.surface.find_entities_filtered({ position: player.position, radius: 60, type: 'rocket-silo' })
+      if (silos.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no rocket-silo within 60 tiles' }))
+        return false
+      }
+      const silo = get_nearest_entity(player, silos)
+      if (silo === undefined || silo === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no rocket-silo found' }))
+        return false
+      }
+      const launched = silo.launch_rocket()
+      if (!launched) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `silo at (${math.floor(silo.position.x)},${math.floor(silo.position.y)}) has no finished rocket yet — feed it rocket parts and wait for assembly`, rocketParts: silo.rocket_parts }))
+        return false
+      }
+      log(`[AUTORIO] launch_rocket: launched from silo at (${math.floor(silo.position.x)},${math.floor(silo.position.y)})`)
+      rcon.print(helpers.table_to_json({ ok: true, x: math.floor(silo.position.x), y: math.floor(silo.position.y) }))
       return true
     },
   })

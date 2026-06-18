@@ -22,6 +22,8 @@ You almost never compute tile coordinates. For each build there is a **placement
 
 **Use these primitives.** You decide the INTENT (which resource, which machines to connect); the mod resolves the tile. Only fall back to raw `placeAt(name, {x,y})` for a layout no primitive covers (then read a ready coord from `placementSpots`/`drill_outputs`/`pump_spots` — never count the ASCII ruler).
 
+**The path UP to a rocket (compose these into skills, in order):** (1) power — `buildSteamPower()` + `connect(...,'power')`; (2) automate intermediates — place an assembler, `setRecipe`, feed it (`placeInserterBetween`/`connect`); (3) science — place a `lab` (`placeNextTo`/`placeAt`), wire power, feed science packs (`moveItems`), then `researchTechnology`; (4) oil — a pumpjack IS a drill (`placeDrillOn('crude-oil')`), pipe it to an oil-refinery (`connect(...,'pipe')`), `setRecipe`, then chemical-plants for plastic/sulfuric-acid/lubricant; (5) rocket — build the silo (`placeAt`), set its rocket-part recipe + feed parts (`moveItems`), then `launchRocket()`. Use `getEntity({x,y})` to confirm each recipe/fluid hookup took.
+
 ## HARD RULES (breaking one wastes the whole attempt — the critic WILL reject it)
 
 1. **Prefer a primitive over `placeAt`.** Reach the area first (`walkToEntity('iron-ore', 200)`), then call the primitive. Check `.ok` after every op and adapt on failure — don't blindly continue.
@@ -44,6 +46,8 @@ After building + fueling, `await ops.scan()` and check EACH machine's `status`. 
 - `full_output` → drain its output (`moveItems` `toEntity:false`, or a belt/chest).
 - `no_minable_resources` / `n/a` on a drill → genuinely misplaced → mine it back and `placeDrillOn(<resource>)` again.
 
+When a status is confusing (e.g. an assembler stuck `item_ingredient_shortage`, or a fluid machine `no_input_fluid`), call `await ops.getEntity({x: e.x, y: e.y})` on that scan entity to see its `missingIngredients` / `fluids` link state and fix the exact cause.
+
 Don't end the function while a machine you built is not `working` (or fixes are exhausted). `ops.log(...)` the statuses you saw (the verifier reads these).
 
 ## The `ops` API (the ONLY thing you may call)
@@ -64,6 +68,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.getState()` → `{ inventory, entities, position, health, currentResearch }`.
 - `await ops.craftPlan(item, count?)` → `{ raw, steps:[{name,amount,category,enabled}], locked }`. The WHOLE chain, leaves-first. Call FIRST for any build/craft.
 - `await ops.getRecipe(name)` / `await ops.describeEntity(name)` / `await ops.techFor(item)` / `await ops.usedIn(item)` — exact recipe / entity mechanics / what to research / what consumes it.
+- `await ops.getEntity({x,y})` → deep detail for the ONE machine at a tile: posed `recipe`, `input`/`output`/`fuel` contents, `fluids` link state (`linked:false` = pipe didn't connect), `missingIngredients`. Call this to DIAGNOSE a machine whose `scan` status isn't `working` (it tells you exactly what it's short of / not connected). Null if no machine there.
 - `await ops.findNearest(name)` → `{name,x,y,distance}` for ore/coal/**water** far beyond the map.
 - `await ops.productionStats()` → `{produced, consumed}` cumulative counters (proof of real output).
 
@@ -73,8 +78,9 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.mineEntity(name, count?)` — mine ore/coal/stone/trees within ~5 tiles (walk first), or pick up a misplaced machine.
 - `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity. `toEntity:true` inserts (fuel/ingredients), `false` takes (collect output).
 - `await ops.craftItem(recipe, count?)` — hand-craft (recipe unlocked + ingredients held; no auto-prerequisites).
-- `await ops.setRecipe(recipe)` — set the nearest assembling-machine's recipe (it needs a recipe AND electricity to run).
+- `await ops.setRecipe(recipe)` — set the nearest crafting machine's recipe: assembler, chemical-plant OR oil-refinery (all the same entity type). It needs a recipe AND electricity to run. e.g. `setRecipe('sulfuric-acid')` on a chemical plant.
 - `await ops.researchTechnology(name)` — start researching (needs a powered lab + science packs).
+- `await ops.launchRocket()` — launch the nearest rocket-silo's rocket (it must already hold a finished rocket: give the silo the rocket-part recipe + ingredients and wait first).
 - `await ops.wait(ticks)` — wait N ticks (60≈1s); use after fueling to let smelting happen.
 - `await ops.attackNearestEnemy(radius?)` — shoot the nearest enemy (needs gun+ammo).
 - `await ops.skill(name, ...args)` — run a previously-learned skill. Prefer reusing one when it fits.

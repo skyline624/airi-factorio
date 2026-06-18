@@ -1,4 +1,4 @@
-import type { GameState, ScanResult } from './types'
+import type { GameState, ScanResult, SuccessCheck } from './types'
 import { useLogg } from '@guiiai/logg'
 import { generateCode, summarizeScan } from './action'
 import { attemptObjective } from './attempt'
@@ -148,7 +148,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   const completed: string[] = []
   const failed: string[] = []
 
-  async function runOneObjective(objective: string, context: string) {
+  async function runOneObjective(objective: string, context: string, successCheck?: SuccessCheck) {
     await deps.say(`New objective: ${objective}`).catch(() => {})
 
     const skills = await library.retrieve(`${objective} ${context}`.trim())
@@ -174,7 +174,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       maxRetries: deps.maxRetries,
       deterministicCritic: deps.deterministicCritic,
       log: message => logger.log(message),
-    })
+    }, successCheck)
 
     if (result.success && result.code) {
       const name = extractEntryName(result.code)
@@ -222,6 +222,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       for (let i = 1; i <= deps.maxObjectives && running; i++) {
         let objective: string
         let context = ''
+        let successCheck: SuccessCheck | undefined
 
         if (pendingRedirect) {
           objective = pendingRedirect
@@ -275,10 +276,11 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           }
           objective = proposed.objective
           context = proposed.context
-          logger.withFields({ step: i, objective, reasoning: proposed.reasoning }).log('Curriculum proposed the next objective')
+          successCheck = proposed.successCheck
+          logger.withFields({ step: i, objective, reasoning: proposed.reasoning, successCheck }).log('Curriculum proposed the next objective')
         }
 
-        await runOneObjective(objective, context)
+        await runOneObjective(objective, context, successCheck)
       }
     }
     else {

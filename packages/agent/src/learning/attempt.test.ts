@@ -18,6 +18,7 @@ function mockOps(): Ops {
     moveItems: ok,
     craftItem: ok,
     setRecipe: ok,
+    launchRocket: ok,
     buildSteamPower: async () => ({ ok: true }),
     researchTechnology: ok,
     wait: ok,
@@ -28,6 +29,7 @@ function mockOps(): Ops {
     renderMap: async () => null,
     getRecipe: async () => null,
     describeEntity: async () => null,
+    getEntity: async () => null,
     findNearest: async () => null,
     placementSpots: async () => ({ spots: [] }),
     placeDrillOn: async () => ({ ok: true }),
@@ -63,6 +65,24 @@ describe('attemptObjective', () => {
     const r = await attemptObjective('mine coal', '', { ...base, generateCode, verify })
     expect(r.success).toBe(true)
     expect(r.attempts).toBe(1)
+  })
+
+  it('with a successCheck, decides deterministically and NEVER calls the LLM critic', async () => {
+    const generateCode = vi.fn(async () => ({ code: CODE, raw: '' }))
+    const verify = vi.fn(async (): Promise<Verdict> => ({ success: true, critique: '' }))
+    // production of iron-plate rises across the attempt -> the 'produce' check passes in code.
+    let prodCall = 0
+    const captureProduction = async () => (++prodCall === 1 ? { 'iron-plate': 0 } : { 'iron-plate': 10 })
+    const r = await attemptObjective(
+      'automate iron plates',
+      '',
+      // deterministicCritic re-enabled (base opts out); the successCheck must short-circuit the LLM.
+      { ...base, deterministicCritic: undefined, generateCode, verify, captureProduction },
+      { kind: 'produce', item: 'iron-plate', count: 5 },
+    )
+    expect(r.success).toBe(true)
+    expect(r.attempts).toBe(1)
+    expect(verify).not.toHaveBeenCalled()
   })
 
   it('retries with the critique then succeeds, threading feedback', async () => {
