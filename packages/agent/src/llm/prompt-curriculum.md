@@ -25,21 +25,23 @@ Principles:
   - Then, separately: "Place the burner-mining-drill on the nearest copper-ore patch, put a stone-furnace on its output tile, fuel both, confirm working".
   A one-time manual gather of a new resource is acceptable ONLY to bootstrap the very first machine when none can be crafted yet — say exactly that in `context`.
 
-## Success criterion (REQUIRED — it is how the objective is VERIFIED)
+## Success criterion (the `Check:` line — how the objective is VERIFIED)
 
-Every objective MUST carry a `successCheck`: a machine-verifiable criterion the agent checks IN CODE (no guessing). Pick the `kind` that proves THIS objective is done, using Factorio INTERNAL names:
-- **`acquire`** + `item` + `count` — you GAIN N of an item (mine / collect / craft / smelt into hand). e.g. "mine 20 iron ore" → `{"kind":"acquire","item":"iron-ore","count":20}`.
-- **`produce`** + `item` + `count` — a MACHINE makes N of the item (the force PRODUCTION counter rises). **Use this for EVERY automation/working/feeds/running objective** — it is the proof the chain actually RUNS (a drill+furnace that's `working` shows up as iron-plate being produced). e.g. "drill + furnace smelting iron, both working" → `{"kind":"produce","item":"iron-plate","count":5}`.
-- **`build`** + `entity` + `count` — a NEW entity exists. e.g. "place an assembling-machine" → `{"kind":"build","entity":"assembling-machine-1","count":1}`. Prefer `produce` when the point is the machine WORKING, not merely existing.
-- **`research`** — a technology completes → `{"kind":"research"}`.
+End with a `Check:` line: a machine-verifiable criterion the agent checks IN CODE (no guessing). Pick the `kind` that proves THIS objective is done, using Factorio INTERNAL names:
+- **`acquire`** + `item` + `count` — you GAIN N of an item (mine / collect / craft / smelt into hand). e.g. `Check: acquire iron-ore 20`.
+- **`produce`** + `item` + `count` — a MACHINE makes N of the item (the force PRODUCTION counter rises). **Use this for EVERY automation/working/feeds/running objective** — it is the proof the chain actually RUNS (a drill+furnace that's `working` shows up as iron-plate being produced). e.g. `Check: produce iron-plate 5`.
+- **`build`** + `entity` + `count` — a NEW entity exists. e.g. `Check: build assembling-machine-1 1`. Prefer `produce` when the point is the machine WORKING, not merely existing.
+- **`research`** — a technology completes → `Check: research`.
 
-The `successCheck` MUST match the objective (same item/entity/count). Default `count` is 1 if omitted.
+The `Check:` MUST match the objective (same item/entity/count). If you are unsure of the right kind, omit the line — the agent then uses its heuristic check. Default `count` is 1 if omitted.
 
-Respond with a SINGLE JSON object, no surrounding text and no code fences:
+## Output format — labelled lines (NOT JSON)
 
-{
-  "reasoning": "one sentence on why this is the right next step given the state and skills",
-  "objective": "the concrete next objective, imperative and measurable",
-  "context": "a short how-to hint for the agent (may be empty)",
-  "successCheck": { "kind": "produce", "item": "iron-plate", "count": 5 }
-}
+Reply with up to four labelled lines. Each label starts a line and is followed by `: `. Do NOT wrap in JSON, do NOT use code fences, do NOT add prose around the labels:
+
+Reasoning: one sentence on why this is the right next step given the state and skills
+Task: the concrete next objective, imperative and measurable
+Context: a short how-to hint for the agent (may be empty)
+Check: produce iron-plate 5
+
+`Task:` is REQUIRED. `Reasoning:`, `Context:`, `Check:` are optional but always include `Check:` when you can. Keep each value on ONE line.

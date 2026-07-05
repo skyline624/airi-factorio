@@ -1,7 +1,6 @@
 import type { GameState, SuccessCheck } from './types'
 import curriculumPrompt from '../llm/prompt-curriculum.md?raw'
 import { summarizeState } from './action'
-import { parseJsonLoose } from './json'
 import { complete } from './llm'
 
 export interface CurriculumInput {
@@ -31,32 +30,69 @@ export interface ProposedObjective {
   successCheck?: SuccessCheck
 }
 
-/** Validate the curriculum's success criterion; undefined (→ heuristic fallback) if malformed. */
-function parseSuccessCheck(raw: unknown): SuccessCheck | undefined {
-  if (!raw || typeof raw !== 'object') {
-    return undefined
-  }
-  const c = raw as Record<string, unknown>
-  const kind = c.kind
+/**
+ * Parse a `Check:` line of the form `Check: <kind> [item|entity] [count]` into a SuccessCheck.
+ * Examples: `Check: produce iron-plate 5` | `Check: acquire iron-ore 20` |
+ *           `Check: build assembling-machine-1` | `Check: research`.
+ * Returns undefined (→ the attempt falls back to the heuristic precheck) when the line is
+ * absent or malformed — so the critic stays correct even if the model botches this one line.
+ */
+function parseCheckLine(rest: string): SuccessCheck | undefined {
+  const parts = rest.trim().split(/\s+/)
+  const kind = parts[0]
   if (kind !== 'acquire' && kind !== 'produce' && kind !== 'build' && kind !== 'research') {
     return undefined
   }
-  const out: SuccessCheck = { kind }
-  if (typeof c.item === 'string' && c.item.trim()) {
-    out.item = c.item.trim()
+  if (kind === 'research') {
+    return { kind: 'research' }
   }
-  if (typeof c.entity === 'string' && c.entity.trim()) {
-    out.entity = c.entity.trim()
-  }
-  if (typeof c.count === 'number' && c.count > 0) {
-    out.count = Math.floor(c.count)
-  }
-  // The field the kind needs must be present, else treat as malformed (fall back to heuristic).
-  if ((kind === 'acquire' || kind === 'produce') && !out.item) {
+  const target = parts[1] ?? ''
+  if (!target) {
     return undefined
   }
-  if (kind === 'build' && !out.entity) {
-    return undefined
+  const countRaw = parts[2]
+  const count = countRaw !== undefined ? Number.parseInt(countRaw, 10) : 1
+  const out: SuccessCheck = { kind, count: Number.isFinite(count) && count > 0 ? Math.floor(count) : 1 }
+  if (kind === 'build') {
+    out.entity = target
+  }
+  else {
+    out.item = target
+  }
+  return out
+}
+
+/**
+ * Voyager-style line parser. Tolerant: looks for `Task:`, `Reasoning:`, `Context:`, `Check:`
+ * labelled lines anywhere in the model's response — no JSON, no fences, no exact-order
+ * requirement. If the model babbles around the labels, the Task line still parses. This is the
+ * robustness Voyager gets and glm-5.2 fails to provide as JSON (it routes answers into its
+ * reasoning channel / wraps JSON in prose). The Task line is REQUIRED; the rest optional.
+ */
+function parseLineObjective(content: string): { reasoning?: string, objective?: string, context: string, successCheck?: SuccessCheck } {
+  const out: { reasoning?: string, objective?: string, context: string, successCheck?: SuccessCheck } = { context: '' }
+  // Match a labelled line at start-of-line; capture the label and the rest of that line.
+  // Multi-line values are NOT supported — each label is one line (Voyager convention).
+  const labelRe = /^(Reasoning|Task|Context|Check)\s*:\s*(.*)$/i
+  for (const raw of content.split(/\r?\n/)) {
+    const m = raw.match(labelRe)
+    if (!m) {
+      continue
+    }
+    const value = (m[2] ?? '').trim()
+    const label = m[1].toLowerCase()
+    if (label === 'task') {
+      out.objective = value
+    }
+    else if (label === 'reasoning') {
+      out.reasoning = value
+    }
+    else if (label === 'context') {
+      out.context = value
+    }
+    else if (label === 'check') {
+      out.successCheck = parseCheckLine(value)
+    }
   }
   return out
 }
@@ -92,7 +128,7 @@ function buildMessage(input: CurriculumInput): string {
   if (input.failed.length) {
     lines.push('', `RECENTLY FAILED (pick a simpler version or a prerequisite): ${input.failed.slice(-6).join(' | ')}`)
   }
-  lines.push('', 'Propose the next objective as the JSON object.')
+  lines.push('', 'Propose the next objective as labelled lines (see output format in the system prompt).')
   return lines.join('\n')
 }
 
@@ -100,14 +136,17 @@ function buildMessage(input: CurriculumInput): string {
 export async function proposeNextObjective(input: CurriculumInput): Promise<ProposedObjective | null> {
   const call = input.complete ?? complete
   const content = await call({ system: curriculumPrompt, user: buildMessage(input), model: input.model })
-  const parsed = parseJsonLoose<ProposedObjective>(content)
-  if (!parsed || typeof parsed.objective !== 'string' || !parsed.objective.trim()) {
+  if (!content) {
+    return null
+  }
+  const parsed = parseLineObjective(content)
+  if (!parsed.objective || !parsed.objective.trim()) {
     return null
   }
   return {
     reasoning: parsed.reasoning,
     objective: parsed.objective.trim(),
-    context: typeof parsed.context === 'string' ? parsed.context.trim() : '',
-    successCheck: parseSuccessCheck((parsed as { successCheck?: unknown }).successCheck),
+    context: parsed.context,
+    successCheck: parsed.successCheck,
   }
 }
