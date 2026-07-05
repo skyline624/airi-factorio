@@ -35,6 +35,12 @@ End with a `Check:` line: a machine-verifiable criterion the agent checks IN COD
 
 The `Check:` MUST match the objective (same item/entity/count). If you are unsure of the right kind, omit the line — the agent then uses its heuristic check. Default `count` is 1 if omitted.
 
+**KEEP COUNTS SMALL — one objective = one small verifiable step.** The `count` proves the step happened, NOT a stockpile target. The agent retries up to 4× within a single skill run (~2-3 min of play); asking for more than the chain can make in that window = a guaranteed FAIL that wastes all 4 attempts. Caps:
+- **`produce`**: 1–5 (just enough to PROVE the machine runs — e.g. `produce iron-plate 3`). NEVER 50/75/100; "make plates in bulk" is a LATER scaling objective, not this rung. Once a `produce X N` succeeds, do NOT re-propose a bigger-N `produce` of the same item (that is grind) — advance to the next rung instead.
+- **`acquire`**: 1–20 (enough to CRAFT or BUILD the next step, e.g. `acquire iron-ore 10`). NEVER ask for 50+ of a raw unless a specific build names it.
+- **`build`**: 1 (one machine at a time).
+If the objective is "fuel the furnace so it resumes smelting", the proof is `produce iron-plate 3`, not 75.
+
 ## Output format — labelled lines (NOT JSON)
 
 Reply with up to four labelled lines. Each label starts a line and is followed by `: `. Do NOT wrap in JSON, do NOT use code fences, do NOT add prose around the labels:
