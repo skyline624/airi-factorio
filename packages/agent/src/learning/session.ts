@@ -8,7 +8,7 @@ import { extractLastJsonLine } from './json'
 import { createGameDataCache, createOps, extractEntryName, runSkill, syncCacheEpoch } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
-import { buildBatchedCaptureCommand, captureState as captureStateFn, parseBatchedCapture, parseScan } from './state'
+import { captureState as captureStateFn, parseScan } from './state'
 
 const logger = useLogg('learning').useGlobalConfig()
 
@@ -81,15 +81,6 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     }
     return s
   }
-  // Post-run trio (state + factory census + production counters) in ONE RCON round-trip,
-  // instead of three sequential calls per attempt.
-  const captureBatch = async () => {
-    const b = parseBatchedCapture(await deps.raw(buildBatchedCaptureCommand(deps.playerName ?? '')))
-    if (gameDataCache && typeof b.state.researchedCount === 'number') {
-      syncCacheEpoch(gameDataCache, b.state.researchedCount)
-    }
-    return b
-  }
   // The critic's post-run evidence: a surface-wide census of the force's producing
   // machines + status (NOT a player-centred scan, which misses the build whenever
   // the agent wandered off — e.g. to mine coal — before the run ended).
@@ -161,7 +152,11 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       captureState,
       captureScan,
       captureProduction,
-      captureBatch,
+      // captureBatch deliberately omitted: its jcall() does remote.call(...) which returns
+      // the handler's Lua return value (true), NOT the rcon.print JSON — so batch.production
+      // and batch.scan came back null/boolean, making the deterministic critic always see a
+      // +0 production delta (false FAIL on every 'produce' check). Falling back to the three
+      // separate calls below costs one extra round-trip but actually measures production.
       resetTasks,
       generateCode,
       verify,
