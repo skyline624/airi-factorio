@@ -340,6 +340,127 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','set_recipe',${luaArg(recipe)})`))
       return (d && d.ok === true) ? { ok: true } : { ok: false, error: (d && d.error) ? d.error : 'set_recipe failed' }
     },
+    // High-level composite primitives. Each bundles the walk / prerequisites / arithmetic the
+    // model kept getting wrong (craft one pipe instead of three; moveItems out of reach; act
+    // without holding the item). They only ORCHESTRATE existing ops — the model still decides
+    // WHAT to craft/fuel/collect; these just make the mechanical HOW reliable. Not settling
+    // themselves (the sub-ops settle); the op cap is enforced by the sub-ops' bumpOpCount.
+    craftAll: async (item: string, count = 1): Promise<OpResult> => {
+      const have0 = (await ops.getState()).inventory[item] ?? 0
+      if (have0 >= count) {
+        return { ok: true, data: { alreadyHad: have0 } }
+      }
+      const plan = await ops.craftPlan(item, count)
+      if (!plan) {
+        return { ok: false, error: `craftAll: no recipe for '${item}'` }
+      }
+      if (plan.locked && plan.locked.length) {
+        return { ok: false, error: `craftAll: '${item}' needs research first (locked: ${plan.locked.join(', ')}). Research it, then retry.` }
+      }
+      // Craft the intermediate chain leaves-first. A 'smelting' step can't be hand-crafted (a
+      // furnace makes it) — if we're short, fail with a clear "smelt it first" message.
+      for (const step of plan.steps) {
+        if (step.name === item) {
+          continue
+        }
+        const cur = (await ops.getState()).inventory[step.name] ?? 0
+        if (cur >= step.amount) {
+          continue
+        }
+        if (step.category === 'smelting') {
+          return { ok: false, error: `craftAll: need ${step.amount}x '${step.name}' (smelted, not hand-craftable) — build a furnace to make it and collect from its output, then retry. Have ${cur}.` }
+        }
+        const r = await ops.craftItem(step.name, step.amount - cur)
+        if (!r.ok) {
+          return { ok: false, error: `craftAll: failed crafting ${step.amount - cur}x '${step.name}': ${r.error}` }
+        }
+      }
+      // Craft the final item (shortfall vs what we already hold).
+      const haveNow = (await ops.getState()).inventory[item] ?? 0
+      if (haveNow < count) {
+        const r = await ops.craftItem(item, count - haveNow)
+        if (!r.ok) {
+          return { ok: false, error: `craftAll: failed crafting '${item}': ${r.error}` }
+        }
+      }
+      const final = (await ops.getState()).inventory[item] ?? 0
+      return final >= count ? { ok: true, data: { crafted: final } } : { ok: false, error: `craftAll: only have ${final}/${count} '${item}' after crafting` }
+    },
+    ensure: async (item: string, count = 1): Promise<OpResult> => {
+      const have = (await ops.getState()).inventory[item] ?? 0
+      if (have >= count) {
+        return { ok: true, data: { had: have } }
+      }
+      const need = count - have
+      // Craftable (has an enabled recipe) -> craftAll. Otherwise it's a raw resource -> mine it.
+      const recipe = await ops.getRecipe(item)
+      if (recipe && recipe.enabled) {
+        return ops.craftAll(item, count)
+      }
+      const walk = await ops.walkToEntity(item, 300)
+      if (!walk.ok) {
+        // Tile-based resource (e.g. a spot with no entity) — reach it via findNearest/walkTo.
+        const near = await ops.findNearest(item)
+        if (!near) {
+          return { ok: false, error: `ensure: '${item}' is neither craftable nor a reachable resource` }
+        }
+        await ops.walkTo(near.x, near.y)
+      }
+      const mined = await ops.mineEntity(item, need)
+      if (!mined.ok) {
+        return { ok: false, error: `ensure: failed mining '${item}': ${mined.error}` }
+      }
+      const final = (await ops.getState()).inventory[item] ?? 0
+      return final >= count ? { ok: true, data: { got: final } } : { ok: false, error: `ensure: only have ${final}/${count} '${item}' after mining` }
+    },
+    fuel: async (entityName: string, item = 'coal', amount = 5): Promise<OpResult> => {
+      // Guarantee we hold the fuel first (the #1 fuelling failure was an empty hand).
+      const have = (await ops.getState()).inventory[item] ?? 0
+      if (have < amount) {
+        const got = await ops.ensure(item, amount)
+        if (!got.ok) {
+          return { ok: false, error: `fuel: could not obtain ${amount}x '${item}': ${got.error}` }
+        }
+      }
+      const walk = await ops.walkToEntity(entityName, 50)
+      if (!walk.ok) {
+        return { ok: false, error: `fuel: could not reach '${entityName}': ${walk.error}` }
+      }
+      const moved = await ops.moveItems({ item, entity: entityName, maxCount: amount, toEntity: true })
+      if (!moved.ok) {
+        return { ok: false, error: `fuel: could not load '${item}' into '${entityName}': ${moved.error}` }
+      }
+      return { ok: true }
+    },
+    collectOutput: async (entityName: string, item?: string): Promise<OpResult> => {
+      const walk = await ops.walkToEntity(entityName, 50)
+      if (!walk.ok) {
+        return { ok: false, error: `collectOutput: could not reach '${entityName}': ${walk.error}` }
+      }
+      // Determine what to take. If unspecified, read the machine's output slots via getEntity.
+      let items: string[] = item ? [item] : []
+      if (!item) {
+        const scan = await ops.scan(12)
+        const e = scan.entities.find(en => en.name === entityName || en.type === entityName)
+        if (e) {
+          const detail = await ops.getEntity({ x: e.x, y: e.y })
+          if (detail && detail.output) {
+            items = detail.output.map(o => o.name)
+          }
+        }
+      }
+      if (!items.length) {
+        return { ok: false, error: `collectOutput: nothing to collect from '${entityName}' (no output items — smelt/produce first)` }
+      }
+      let collected = 0
+      for (const it of items) {
+        const r = await ops.moveItems({ item: it, entity: entityName, maxCount: 999, toEntity: false })
+        if (r.ok) {
+          collected += 1
+        }
+      }
+      return collected > 0 ? { ok: true, data: { collected: items } } : { ok: false, error: `collectOutput: could not extract from '${entityName}'` }
+    },
     launchRocket: async (): Promise<OpResult> => {
       bumpOpCount()
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','launch_rocket')`))

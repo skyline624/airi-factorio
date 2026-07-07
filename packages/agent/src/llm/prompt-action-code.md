@@ -72,12 +72,18 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.findNearest(name)` → `{name,x,y,distance}` for ore/coal/**water** far beyond the map.
 - `await ops.productionStats()` → `{produced, consumed}` cumulative counters (proof of real output).
 
-**Other actions**
+**Reliable one-call helpers (PREFER these — they bundle the walk + prerequisites the mod handles for you, so you can't get "out of reach" or "missing ingredient")**
+- `await ops.craftAll(item, count?)` — craft `item` AND its whole ingredient chain (the mod computes amounts + crafts leaves-first). Use this instead of `craftItem` for anything with sub-parts. e.g. `craftAll('offshore-pump')` makes its pipes + gears first. Fails clearly if a step needs research or a smelted input.
+- `await ops.ensure(item, count?)` — guarantee you HOLD `count` of `item` (crafts it if craftable, else walks + mines it). Call before any step that consumes an item so you never act empty-handed. e.g. `ensure('coal', 10)`, `ensure('iron-gear-wheel', 4)`.
+- `await ops.fuel(entityName, item?, amount?)` — fuel a machine in one call: obtains the fuel if needed, walks to it, loads it (default coal ×5). Use this to fuel drills/furnaces instead of manual walk + moveItems. e.g. `fuel('stone-furnace')`.
+- `await ops.collectOutput(entityName, item?)` — walk to a machine and empty its OUTPUT into your inventory (fixes `full_output`). e.g. `collectOutput('stone-furnace')` grabs smelted plates.
+
+**Other actions (lower-level — the helpers above are usually better)**
 - `await ops.walkToEntity(name, 200)` — walk to the nearest matching entity (big radius). Do this before building/mining/transferring on it.
 - `await ops.walkTo(x, y)` — walk to an arbitrary tile (e.g. a water shore from `findNearest('water')`).
 - `await ops.mineEntity(name, count?)` — mine ore/coal/stone/trees within ~5 tiles (walk first), or pick up a misplaced machine.
-- `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity. `toEntity:true` inserts (fuel/ingredients), `false` takes (collect output).
-- `await ops.craftItem(recipe, count?)` — hand-craft (recipe unlocked + ingredients held; no auto-prerequisites).
+- `await ops.moveItems({ item, entity, maxCount?, toEntity? })` — move items between you and a nearby entity. `toEntity:true` inserts, `false` takes. (For fuelling prefer `fuel(...)`, for collecting prefer `collectOutput(...)`.)
+- `await ops.craftItem(recipe, count?)` — hand-craft ONE recipe (ingredients must be held; no auto-prerequisites). Prefer `craftAll` unless you specifically want a single step.
 - `await ops.setRecipe(recipe)` — set the nearest crafting machine's recipe: assembler, chemical-plant OR oil-refinery (all the same entity type). It needs a recipe AND electricity to run. e.g. `setRecipe('sulfuric-acid')` on a chemical plant.
 - `await ops.researchTechnology(name)` — start researching (needs a powered lab + science packs).
 - `await ops.launchRocket()` — launch the nearest rocket-silo's rocket (it must already hold a finished rocket: give the silo the rocket-part recipe + ingredients and wait first).

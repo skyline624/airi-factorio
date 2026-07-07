@@ -270,6 +270,14 @@ export interface Ops {
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   /** Set the recipe of the nearest crafting machine within 20 tiles — assembler, chemical-plant OR oil-refinery (all entity-type 'assembling-machine'). It produces NOTHING without one (and needs ELECTRICITY). Place the machine, walk to it, then `setRecipe('iron-gear-wheel')` / `setRecipe('sulfuric-acid')`. This is how you AUTOMATE an intermediate or fluid product. */
   setRecipe: (recipe: string) => Promise<OpResult>
+  /** Hand-craft `item` AND its whole intermediate chain (the mod reads the recipe graph and crafts leaves-first — you never compute ingredient amounts). PREFER this over `craftItem` for anything with sub-ingredients (e.g. `craftAll('offshore-pump')` makes the pipes + gears first). `{ok:false}` if a step needs research (with what to research) or a smelted input you must make in a furnace first. */
+  craftAll: (item: string, count?: number) => Promise<OpResult>
+  /** Guarantee you HOLD `count` of `item`: if short, the mod crafts it (craftable → `craftAll`) or mines it (raw resource → walk + mine), then you have it. Use before any step that consumes an item so you never act empty-handed. e.g. `ensure('coal', 10)`, `ensure('iron-gear-wheel', 4)`. */
+  ensure: (item: string, count?: number) => Promise<OpResult>
+  /** Fuel a machine in ONE call: guarantees you hold the fuel (obtains it if not), walks to the nearest `entityName`, and loads `amount` of `item` (default coal ×5). Replaces the walk-then-moveItems dance that kept failing "out of reach". e.g. `fuel('stone-furnace')`, `fuel('burner-mining-drill', 'coal', 10)`. */
+  fuel: (entityName: string, item?: string, amount?: number) => Promise<OpResult>
+  /** Walk to the nearest `entityName` and empty its OUTPUT into your inventory (clears a `full_output` machine). Omit `item` to auto-detect what's in its output slots. e.g. `collectOutput('stone-furnace')` to grab smelted plates. */
+  collectOutput: (entityName: string, item?: string) => Promise<OpResult>
   /** Launch the nearest rocket-silo's finished rocket (within 60 tiles). The silo must already HOLD a completed rocket — give it the rocket-part recipe + ingredients (it assembles automatically) and wait first. `{ok:false}` with `rocketParts` count if no rocket is ready. */
   launchRocket: () => Promise<OpResult>
   /** Deterministically build a fluid-aligned steam-power chain in ONE call: places offshore-pump -> boiler -> steam-engine (alignment verified by the game), fuels the boiler with your coal, and wires a pole if you have one. Walk NEAR water first and hold the items (1 offshore-pump, 1 boiler, 1 steam-engine, coal). Use this instead of hand-placing the chain — the fluid faces are a fixed mechanism, not a layout you read off the map. */

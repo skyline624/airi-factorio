@@ -276,6 +276,134 @@ describe('createOps', () => {
   })
 })
 
+describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () => {
+  // A raw router: mutable inventory for getstate, plus canned tool/op replies keyed by command.
+  function router(inv: Record<string, number>, extra?: (input: string) => string | null) {
+    return vi.fn(async (input: string) => {
+      if (input.includes('getstate')) {
+        return JSON.stringify({ tick: 1, inventory: inv, entities: {}, researched_count: 0 })
+      }
+      const e = extra?.(input)
+      if (e !== null && e !== undefined) {
+        return e
+      }
+      // Settling ops reply [true]; their settle is driven in the test.
+      return '[true]'
+    })
+  }
+
+  it('craftAll short-circuits when you already hold enough', async () => {
+    const raw = router({ 'iron-gear-wheel': 5 })
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.craftAll('iron-gear-wheel', 4)).resolves.toMatchObject({ ok: true, data: { alreadyHad: 5 } })
+    // No craft_plan lookup needed.
+    expect(raw.mock.calls.some(c => String(c[0]).includes('craft_plan'))).toBe(false)
+  })
+
+  it('craftAll fails clearly when the chain needs research', async () => {
+    const raw = router({}, (input) => {
+      if (input.includes('craft_plan')) {
+        return JSON.stringify({ item: 'offshore-pump', count: 1, raw: {}, steps: [], locked: ['electronics'] })
+      }
+      return null
+    })
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const r = await ops.craftAll('offshore-pump')
+    expect(r.ok).toBe(false)
+    expect(r.error).toContain('research')
+  })
+
+  it('craftAll crafts the whole chain leaves-first then the item', async () => {
+    const bus = createSettleBus(1000)
+    // inventory stays empty in getstate; craftItem is a settling op we resolve immediately.
+    const raw = router({}, (input) => {
+      if (input.includes('craft_plan')) {
+        return JSON.stringify({
+          item: 'offshore-pump',
+          count: 1,
+          raw: {},
+          steps: [
+            { name: 'pipe', amount: 3, category: 'crafting', enabled: true },
+            { name: 'iron-gear-wheel', amount: 2, category: 'crafting', enabled: true },
+          ],
+          locked: [],
+        })
+      }
+      return null
+    })
+    const ops = createOps({ raw, settleBus: bus })
+    // craftItem settles via 'All operations completed'; auto-complete each craft op.
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    // The final held-count check will still read 0 -> expect a clear shortfall error, but the
+    // key assertion is that it dispatched craft_item for BOTH intermediates.
+    await ops.craftAll('offshore-pump')
+    const craftCalls = raw.mock.calls.map(c => String(c[0])).filter(s => s.includes('craft_item'))
+    expect(craftCalls.some(s => s.includes(`'pipe',3`))).toBe(true)
+    expect(craftCalls.some(s => s.includes(`'iron-gear-wheel',2`))).toBe(true)
+  })
+
+  it('ensure crafts a craftable item (delegates to craftAll)', async () => {
+    const raw = router({}, (input) => {
+      if (input.includes('\'describe\'')) {
+        return JSON.stringify({ recipe: { name: 'pipe', ingredients: [], products: [], enabled: true, category: 'crafting' } })
+      }
+      if (input.includes('craft_plan')) {
+        return JSON.stringify({ item: 'pipe', count: 2, raw: {}, steps: [], locked: [] })
+      }
+      return null
+    })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await ops.ensure('pipe', 2)
+    expect(raw.mock.calls.some(c => String(c[0]).includes('craft_plan'))).toBe(true)
+  })
+
+  it('ensure mines a raw (non-craftable) resource', async () => {
+    const raw = router({}, (input) => {
+      if (input.includes('\'describe\'')) {
+        return JSON.stringify({}) // no recipe -> raw resource
+      }
+      return null
+    })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await ops.ensure('coal', 10)
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    expect(cmds.some(s => s.includes('walk_to_entity') && s.includes('coal'))).toBe(true)
+    expect(cmds.some(s => s.includes('mine_entity') && s.includes('coal'))).toBe(true)
+  })
+
+  it('fuel obtains fuel, walks, and loads it in one call', async () => {
+    // Already hold coal -> skips ensure; just walk + move.
+    const raw = router({ coal: 20 })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await expect(ops.fuel('stone-furnace')).resolves.toEqual({ ok: true })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    expect(cmds.some(s => s.includes('walk_to_entity') && s.includes('stone-furnace'))).toBe(true)
+    expect(cmds.some(s => s.includes('move_items') && s.includes('coal') && s.includes('stone-furnace'))).toBe(true)
+  })
+
+  it('collectOutput walks and extracts the named item from the machine output', async () => {
+    const raw = router({}, () => null)
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await expect(ops.collectOutput('stone-furnace', 'iron-plate')).resolves.toMatchObject({ ok: true })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    // move_items with toEntity:false (the 4th arg is false) to TAKE from the furnace.
+    expect(cmds.some(s => s.includes('move_items') && s.includes('iron-plate') && s.includes('false'))).toBe(true)
+  })
+})
+
 function makeMockOps(): Ops {
   const logs: string[] = []
   const ok = async () => ({ ok: true })
@@ -289,6 +417,10 @@ function makeMockOps(): Ops {
     moveItems: ok,
     craftItem: ok,
     setRecipe: ok,
+    craftAll: ok,
+    ensure: ok,
+    fuel: ok,
+    collectOutput: ok,
     launchRocket: ok,
     buildSteamPower: async () => ({ ok: true }),
     researchTechnology: ok,
