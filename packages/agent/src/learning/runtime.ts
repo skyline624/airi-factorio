@@ -281,8 +281,8 @@ export function createOps(deps: OpsDeps): Ops {
     },
     placeDrillOn: async (resource: string, drillName = 'burner-mining-drill'): Promise<OpResult> => {
       bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string, mining?: string }>(await deps.raw(`/c remote.call('autorio_tools','place_drill_on',${luaArg(resource)},${luaArg(drillName)})`))
-      return (d && d.ok === true) ? { ok: true, data: { mining: d.mining } } : { ok: false, error: (d && d.error) ? d.error : 'place_drill_on failed' }
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, mining?: string, x?: number, y?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_drill_on',${luaArg(resource)},${luaArg(drillName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { mining: d.mining, x: d.x, y: d.y } } : { ok: false, error: (d && d.error) ? d.error : 'place_drill_on failed' }
     },
     placeFurnaceAtDrill: async (furnaceName = 'stone-furnace'): Promise<OpResult> => {
       bumpOpCount()
@@ -573,6 +573,14 @@ export function createOps(deps: OpsDeps): Ops {
       if (!drill.ok) {
         return { ok: false, error: `automateResource: could not seat a drill on '${resource}': ${drill.error}` }
       }
+      // Stand on the drill we JUST placed before adding its output: placeFurnaceAtDrill/
+      // placeChestAtDrill target the drill NEAREST the player, so with other drills clustered nearby
+      // (e.g. a copper drill next to the new coal drill) the output would otherwise land on the wrong
+      // drill's drop tile. Walk onto the new drill so it is unambiguously the nearest.
+      const dp = drill.data as { mining?: string, x?: number, y?: number } | undefined
+      if (dp && typeof dp.x === 'number' && typeof dp.y === 'number') {
+        await ops.walkTo(dp.x, dp.y)
+      }
       // The drill's output: a furnace (smeltable) so it becomes plate, else a chest (coal/stone).
       const output = plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem)
       if (!output.ok) {
@@ -589,7 +597,7 @@ export function createOps(deps: OpsDeps): Ops {
           return { ok: false, error: `automateResource: could not fuel the furnace: ${ff.error}` }
         }
       }
-      return { ok: true, data: { resource, output: plate ? 'furnace' : 'chest', mining: (drill.data as { mining?: string } | undefined)?.mining } }
+      return { ok: true, data: { resource, output: plate ? 'furnace' : 'chest', mining: dp?.mining } }
     },
     launchRocket: async (): Promise<OpResult> => {
       bumpOpCount()

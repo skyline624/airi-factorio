@@ -182,7 +182,7 @@ describe('createOps', () => {
   it('placeDrillOn dispatches place_drill_on and surfaces the mined resource', async () => {
     const raw = vi.fn(async () => '{"ok":true,"drill":"burner-mining-drill","x":53,"y":-15,"mining":"iron-ore"}')
     const ops = createOps({ raw, settleBus: createSettleBus(1000) })
-    await expect(ops.placeDrillOn('iron-ore')).resolves.toEqual({ ok: true, data: { mining: 'iron-ore' } })
+    await expect(ops.placeDrillOn('iron-ore')).resolves.toEqual({ ok: true, data: { mining: 'iron-ore', x: 53, y: -15 } })
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_drill_on','iron-ore','burner-mining-drill'`))
   })
 
@@ -489,6 +489,8 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     expect(cmds.some(s => s.includes(`'find_nearest','coal'`))).toBe(true)
     expect(cmds.some(s => s.includes(`'walk_to_position',250,-30`))).toBe(true)
     expect(cmds.some(s => s.includes(`'place_drill_on','coal'`))).toBe(true)
+    // Walks ONTO the just-placed drill (9,9) so the chest targets THIS drill, not a clustered neighbour.
+    expect(cmds.some(s => s.includes(`'walk_to_position',9,9`))).toBe(true)
     expect(cmds.some(s => s.includes('place_chest_at_drill'))).toBe(true)
     // Coal doesn't smelt -> NO furnace.
     expect(cmds.some(s => s.includes('place_furnace_at_drill'))).toBe(false)
