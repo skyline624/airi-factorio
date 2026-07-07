@@ -42,7 +42,7 @@ You almost never compute tile coordinates. For each build there is a **placement
 
 After building + fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply it, do NOT move it:
 - `no_fuel` → load coal (`moveItems` coal, `toEntity:true`); if you hold none, go mine some. Fuel the drill before the furnace it feeds.
-- `waiting_for_space_in_destination` on a drill → add its output. On a SMELTABLE ore (iron/copper): `await ops.placeFurnaceAtDrill()`. On COAL or STONE (they don't smelt): `await ops.placeChestAtDrill()` (puts a chest on the exact drop tile — do NOT use `placeNextTo`, it misses the output tile). NOT a furnace, NOT a relocation.
+- `waiting_for_space_in_destination` on an EXISTING drill → add its output: SMELTABLE ore (iron/copper) → `await ops.placeFurnaceAtDrill()`; COAL/STONE → `await ops.placeChestAtDrill()` (exact drop tile — NOT `placeNextTo`, NOT a furnace, NOT a relocation). To create a NEW automated resource from scratch, prefer `automateResource(resource)` which does drill + correct output + fuel in one call.
 - `no_power` (a machine) or `not_plugged_in_electric_network` (a steam-engine) → NOT fuel. Wire it: `await ops.connectPowerTo('<machine>')` (ensures a pole from copper-plate+wood, then lays the pole line from the engine). Build steam power first if there's no engine.
 - `full_output` → drain its output (`moveItems` `toEntity:false`, or a belt/chest).
 - `no_minable_resources` / `n/a` on a drill → genuinely misplaced → mine it back and `placeDrillOn(<resource>)` again.
@@ -80,6 +80,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.ensure(item, count?)` — guarantee you HOLD `count` of `item` (crafts it if craftable, else walks + mines it). Call before any step that consumes an item so you never act empty-handed. e.g. `ensure('coal', 10)`, `ensure('iron-gear-wheel', 4)`.
 - `await ops.fuel(entityName, item?, amount?)` — fuel a machine in one call: obtains the fuel if needed, walks to it, loads it (default coal ×5). Use this to fuel drills/furnaces instead of manual walk + moveItems. e.g. `fuel('stone-furnace')`.
 - `await ops.collectOutput(entityName, item?)` — walk to a machine and empty its OUTPUT into your inventory (fixes `full_output`). e.g. `collectOutput('stone-furnace')` grabs smelted plates.
+- `await ops.automateResource(resource)` — AUTOMATE a raw resource in one call: drill on the patch → the RIGHT output (FURNACE for smeltable iron-ore/copper-ore, CHEST for coal/stone) → fuel it. Use for EVERY raw resource instead of hand-mining. **Automate `coal` early** — it fuels every burner machine; hand-mining coal forever stalls the factory. e.g. `automateResource('coal')`, `automateResource('iron-ore')`.
 
 **Other actions (lower-level — the helpers above are usually better)**
 - `await ops.walkToEntity(name, 200)` — walk to the nearest matching entity (big radius). Do this before building/mining/transferring on it.

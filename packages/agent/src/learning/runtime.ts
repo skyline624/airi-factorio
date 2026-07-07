@@ -492,6 +492,41 @@ export function createOps(deps: OpsDeps): Ops {
       }
       return { ok: true, data: { engine: { x: engine.x, y: engine.y }, target: { x: target.x, y: target.y } } }
     },
+    automateResource: async (resource: string, drillName = 'burner-mining-drill'): Promise<OpResult> => {
+      // Full auto-mining chain in one call: drill on the patch -> the RIGHT output (a FURNACE for
+      // a smeltable ore, else a CHEST for coal/stone/etc.) -> fuel everything. Composes existing
+      // ops. Coal especially MUST be automated early — it fuels every burner machine, and
+      // hand-mining it forever is why the factory stalls. iron-ore/copper-ore smelt into a plate;
+      // everything else (coal, stone, uranium-ore, …) is already-finished -> a chest.
+      const SMELTS_TO: Record<string, string> = { 'iron-ore': 'iron-plate', 'copper-ore': 'copper-plate' }
+      const plate = SMELTS_TO[resource]
+
+      const walk = await ops.walkToEntity(resource, 200)
+      if (!walk.ok) {
+        return { ok: false, error: `automateResource: could not reach '${resource}': ${walk.error}` }
+      }
+      const drill = await ops.placeDrillOn(resource, drillName)
+      if (!drill.ok) {
+        return { ok: false, error: `automateResource: could not seat a drill on '${resource}': ${drill.error}` }
+      }
+      // The drill's output: a furnace (smeltable) so it becomes plate, else a chest (coal/stone).
+      const output = plate ? await ops.placeFurnaceAtDrill() : await ops.placeChestAtDrill()
+      if (!output.ok) {
+        return { ok: false, error: `automateResource: could not add the drill's ${plate ? 'furnace' : 'chest'} output: ${output.error}` }
+      }
+      // Fuel the burner-drill always; fuel the furnace too (burner furnaces need coal to smelt).
+      const fd = await ops.fuel('burner-mining-drill')
+      if (!fd.ok) {
+        return { ok: false, error: `automateResource: could not fuel the drill: ${fd.error}` }
+      }
+      if (plate) {
+        const ff = await ops.fuel('stone-furnace')
+        if (!ff.ok) {
+          return { ok: false, error: `automateResource: could not fuel the furnace: ${ff.error}` }
+        }
+      }
+      return { ok: true, data: { resource, output: plate ? 'furnace' : 'chest', mining: (drill.data as { mining?: string } | undefined)?.mining } }
+    },
     launchRocket: async (): Promise<OpResult> => {
       bumpOpCount()
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','launch_rocket')`))

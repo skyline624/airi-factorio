@@ -442,6 +442,49 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     const ops = createOps({ raw, settleBus: createSettleBus(1000) })
     await expect(ops.connectPowerTo('lab')).resolves.toMatchObject({ ok: false, error: expect.stringContaining('no steam-engine') })
   })
+
+  it('automateResource on a SMELTABLE ore places a drill + FURNACE and fuels both', async () => {
+    const raw = router({ coal: 50 }, (input) => {
+      if (input.includes('place_drill_on')) {
+        return '{"ok":true,"drill":"burner-mining-drill","x":5,"y":5,"mining":"iron-ore"}'
+      }
+      if (input.includes('place_furnace_at_drill')) {
+        return '{"ok":true,"furnace":"stone-furnace","x":5,"y":3,"reclaimed":0}'
+      }
+      return null
+    })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await expect(ops.automateResource('iron-ore')).resolves.toMatchObject({ ok: true, data: { output: 'furnace' } })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    expect(cmds.some(s => s.includes(`'place_drill_on','iron-ore'`))).toBe(true)
+    expect(cmds.some(s => s.includes('place_furnace_at_drill'))).toBe(true)
+    expect(cmds.some(s => s.includes('place_chest_at_drill'))).toBe(false)
+  })
+
+  it('automateResource on COAL places a drill + CHEST (no furnace) and fuels the drill', async () => {
+    const raw = router({ coal: 50 }, (input) => {
+      if (input.includes('place_drill_on')) {
+        return '{"ok":true,"drill":"burner-mining-drill","x":9,"y":9,"mining":"coal"}'
+      }
+      if (input.includes('place_chest_at_drill')) {
+        return '{"ok":true,"chest":"wooden-chest","x":9,"y":7,"reclaimed":0}'
+      }
+      return null
+    })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await expect(ops.automateResource('coal')).resolves.toMatchObject({ ok: true, data: { output: 'chest' } })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    expect(cmds.some(s => s.includes(`'place_drill_on','coal'`))).toBe(true)
+    expect(cmds.some(s => s.includes('place_chest_at_drill'))).toBe(true)
+    // Coal doesn't smelt -> NO furnace.
+    expect(cmds.some(s => s.includes('place_furnace_at_drill'))).toBe(false)
+  })
 })
 
 function makeMockOps(): Ops {
@@ -478,6 +521,7 @@ function makeMockOps(): Ops {
     placeDrillOn: async () => ({ ok: true }),
     placeFurnaceAtDrill: async () => ({ ok: true }),
     placeChestAtDrill: async () => ({ ok: true }),
+    automateResource: ok,
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
     connect: async () => ({ ok: true }),
