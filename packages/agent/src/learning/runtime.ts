@@ -466,6 +466,32 @@ export function createOps(deps: OpsDeps): Ops {
       }
       return collected > 0 ? { ok: true, data: { collected: items } } : { ok: false, error: `collectOutput: could not extract from '${entityName}'` }
     },
+    connectPowerTo: async (targetName: string, poleName = 'small-electric-pole'): Promise<OpResult> => {
+      // Wire the nearest steam-engine to the nearest `targetName` machine with a pole line.
+      // Composes existing ops: scan (locate both) -> ensure (guarantee a pole in hand) -> connect
+      // (lay the auto-spaced pole line). This is the fix for an engine stuck not_plugged_in / a
+      // machine reading no_power. The mod computes wire spacing; we just supply the endpoints.
+      const scan = await ops.scan(60)
+      const engine = scan.entities.find(e => e.name === 'steam-engine' || e.type === 'generator')
+      if (!engine) {
+        return { ok: false, error: 'connectPowerTo: no steam-engine nearby — build steam power first (buildSteamPower)' }
+      }
+      const target = scan.entities.find(e => e.name === targetName || e.type === targetName)
+      if (!target) {
+        return { ok: false, error: `connectPowerTo: no '${targetName}' nearby to power` }
+      }
+      // Guarantee we hold a pole (craft it from copper-plate + wood if needed). Needs copper
+      // automated first — else this fails clearly instead of a cryptic "no pole in inventory".
+      const got = await ops.ensure(poleName, 1)
+      if (!got.ok) {
+        return { ok: false, error: `connectPowerTo: could not obtain a '${poleName}' (needs copper-plate + wood — automate copper first): ${got.error}` }
+      }
+      const wired = await ops.connect(engine.x, engine.y, target.x, target.y, 'power', poleName)
+      if (!wired.ok) {
+        return { ok: false, error: `connectPowerTo: failed to wire '${targetName}': ${wired.error}`, data: wired.data }
+      }
+      return { ok: true, data: { engine: { x: engine.x, y: engine.y }, target: { x: target.x, y: target.y } } }
+    },
     launchRocket: async (): Promise<OpResult> => {
       bumpOpCount()
       const d = extractLastJsonLine<{ ok?: boolean, error?: string }>(await deps.raw(`/c remote.call('autorio_tools','launch_rocket')`))

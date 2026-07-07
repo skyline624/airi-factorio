@@ -1854,9 +1854,11 @@ export function create_tools_remote_interface() {
       const engine_info = engine !== undefined ? { x: math.floor(engine.position.x), y: math.floor(engine.position.y), status: status_name(engine.status) } : undefined
       const note = engine === undefined
         ? 'pump + fueled boiler built, but no steam-engine spot connected to the boiler steam output — clear space behind the boiler and place a steam-engine there.'
-        : (pole_placed ? 'pump -> boiler -> steam-engine built, fluid-connected and fueled, with an electric pole.' : 'pump -> boiler -> steam-engine built, fluid-connected and fueled. No electric pole in inventory — add a pole next to the engine to power a network.')
+        : (pole_placed ? 'pump -> boiler -> steam-engine built, fluid-connected and fueled, with an electric pole.' : 'pump -> boiler -> steam-engine built and producing steam, BUT NOT CONNECTED to any network (no pole in inventory). Get a pole (ensure("small-electric-pole") — needs copper-plate + wood) then connectPowerTo the machine you want to power.')
       log(`[AUTORIO] build_steam_power: ${note}`)
-      rcon.print(helpers.table_to_json({ ok: engine !== undefined, pump: pump_info, boiler: boiler_info, engine: engine_info, coal: inserted, pole: pole_placed, note }))
+      // `powered` = the engine is wired into a network (a pole was placed). Distinct from `ok`
+      // (the fluid chain built): the engine can produce steam yet stay not_plugged_in with no pole.
+      rcon.print(helpers.table_to_json({ ok: engine !== undefined, powered: pole_placed, pump: pump_info, boiler: boiler_info, engine: engine_info, coal: inserted, pole: pole_placed, note }))
       return true
     },
     // Deep, FLE-style detail for the single machine at/nearest a tile (recipe, input/output/fuel

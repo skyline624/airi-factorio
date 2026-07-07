@@ -200,6 +200,8 @@ export interface SteamPowerResult {
   coal?: number
   /** whether an electric pole was wired next to the engine. */
   pole?: boolean
+  /** whether the engine is CONNECTED to a network (a pole was placed). If false, the engine produces steam but stays not_plugged_in — get a pole (`ensure('small-electric-pole')`) then `connectPowerTo(...)`. */
+  powered?: boolean
   note?: string
 }
 
@@ -266,6 +268,8 @@ export interface Ops {
   placeInserterBetween: (fromName: string, toName: string, inserterName?: string) => Promise<OpResult>
   /** Connect (startX,startY) -> (endX,endY) along an L-path; the mod resolves every tile/facing/spacing. `kind`='belt' (belts oriented toward the flow), 'pipe' (auto-connecting pipes), or 'power' (electric poles spaced so the chain auto-connects). Take endpoints from `scan()`. Returns `{ok, data:{placed,reused,blocked:[{x,y}]}}`; `ok:false` if a tile was blocked (mine the obstacle / reroute). e.g. wire a lab to a steam-engine: `connect(engineX,engineY, labX,labY, 'power')`. */
   connect: (startX: number, startY: number, endX: number, endY: number, kind?: 'belt' | 'pipe' | 'power', name?: string) => Promise<OpResult>
+  /** Power a machine from your steam-engine in ONE call: locates the nearest steam-engine + the nearest `targetName`, ENSURES you hold a pole (crafts it from copper-plate + wood if needed), then lays a pole line between them. This is THE fix for a steam-engine stuck `not_plugged_in_electric_network` or a machine reading `no_power`. Needs copper automated (for the pole). e.g. `connectPowerTo('lab')`, `connectPowerTo('assembling-machine-1')`. */
+  connectPowerTo: (targetName: string, poleName?: string) => Promise<OpResult>
   /** Place `entity` on a free tile ADJACENT to the nearest `targetName` machine (the mod finds the spot — don't compute coords). e.g. `placeNextTo('assembling-machine-1','iron-chest')`, `placeNextTo('lab','small-electric-pole')`. Returns `{ok, data:{x,y,status}}`. */
   placeNextTo: (entity: string, targetName: string, side?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>

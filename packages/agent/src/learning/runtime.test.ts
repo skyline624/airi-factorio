@@ -414,6 +414,34 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     // move_items with toEntity:false (the 4th arg is false) to TAKE from the furnace.
     expect(cmds.some(s => s.includes('move_items') && s.includes('iron-plate') && s.includes('false'))).toBe(true)
   })
+
+  it('connectPowerTo locates the engine + target, ensures a pole (already held), and dispatches connect power', async () => {
+    const raw = router({ 'small-electric-pole': 5 }, (input) => {
+      if (input.includes('scan_area')) {
+        return '{"origin":{"x":0,"y":0},"radius":60,"entities":[{"name":"steam-engine","type":"generator","x":39,"y":25,"direction":"north","status":"not_plugged_in"},{"name":"lab","type":"lab","x":10,"y":10,"direction":"north","status":"no_power"}],"resources":{}}'
+      }
+      if (input.includes('connect_entities')) {
+        return '{"ok":true,"kind":"power","entity":"small-electric-pole","placed":4,"reused":0,"blocked":[]}'
+      }
+      return null
+    })
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.connectPowerTo('lab')).resolves.toMatchObject({ ok: true })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    // Wires from the engine (39,25) to the lab (10,10) with kind='power'.
+    expect(cmds.some(s => s.includes(`'connect_entities',39,25,10,10,'power'`))).toBe(true)
+  })
+
+  it('connectPowerTo fails clearly when there is no steam-engine nearby', async () => {
+    const raw = router({}, (input) => {
+      if (input.includes('scan_area')) {
+        return '{"origin":{"x":0,"y":0},"radius":60,"entities":[{"name":"lab","type":"lab","x":10,"y":10,"direction":"north","status":"no_power"}],"resources":{}}'
+      }
+      return null
+    })
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.connectPowerTo('lab')).resolves.toMatchObject({ ok: false, error: expect.stringContaining('no steam-engine') })
+  })
 })
 
 function makeMockOps(): Ops {
@@ -453,6 +481,7 @@ function makeMockOps(): Ops {
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
     connect: async () => ({ ok: true }),
+    connectPowerTo: async () => ({ ok: true }),
     placeNextTo: async () => ({ ok: true }),
     craftPlan: async () => null,
     techFor: async () => null,

@@ -18,7 +18,8 @@ You almost never compute tile coordinates. For each build there is a **placement
 - An inserter moving items between two machines → `await ops.placeInserterBetween('stone-furnace', 'transport-belt')` (computes the tile + facing).
 - A connection between two points → `await ops.connect(startX, startY, endX, endY, kind)` with `kind`='belt' / 'pipe' / 'power' (the mod orients belts, auto-connects pipes, spaces poles). e.g. wire a lab to a steam-engine with `'power'`.
 - An entity beside a machine → `await ops.placeNextTo('assembling-machine-1', 'iron-chest')` (the mod finds a free adjacent tile).
-- Steam electricity → `await ops.buildSteamPower()` (places + fluid-connects pump→boiler→engine, fuels, wires a pole).
+- Steam electricity → `await ops.buildSteamPower()` (places + fluid-connects pump→boiler→engine, fuels; wires a pole ONLY IF you hold one — else the engine builds but stays `not_plugged_in_electric_network`).
+- Power a machine from the engine → `await ops.connectPowerTo('lab')` (ensures a pole, then wires the steam-engine to the machine). Use this to fix `not_plugged_in`/`no_power`.
 
 **Use these primitives.** You decide the INTENT (which resource, which machines to connect); the mod resolves the tile. Only fall back to raw `placeAt(name, {x,y})` for a layout no primitive covers (then read a ready coord from `placementSpots`/`drill_outputs`/`pump_spots` — never count the ASCII ruler).
 
@@ -42,7 +43,7 @@ You almost never compute tile coordinates. For each build there is a **placement
 After building + fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply it, do NOT move it:
 - `no_fuel` → load coal (`moveItems` coal, `toEntity:true`); if you hold none, go mine some. Fuel the drill before the furnace it feeds.
 - `waiting_for_space_in_destination` on a drill → add its output. On a SMELTABLE ore (iron/copper): `await ops.placeFurnaceAtDrill()`. On COAL or STONE (they don't smelt): `await ops.placeChestAtDrill()` (puts a chest on the exact drop tile — do NOT use `placeNextTo`, it misses the output tile). NOT a furnace, NOT a relocation.
-- `no_power` → needs electricity (`buildSteamPower` + poles), not fuel.
+- `no_power` (a machine) or `not_plugged_in_electric_network` (a steam-engine) → NOT fuel. Wire it: `await ops.connectPowerTo('<machine>')` (ensures a pole from copper-plate+wood, then lays the pole line from the engine). Build steam power first if there's no engine.
 - `full_output` → drain its output (`moveItems` `toEntity:false`, or a belt/chest).
 - `no_minable_resources` / `n/a` on a drill → genuinely misplaced → mine it back and `placeDrillOn(<resource>)` again.
 
@@ -62,7 +63,8 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.placeInserterBetween(fromName, toName, inserterName?)` — place a correctly-oriented inserter so items flow `from`→`to` (defaults `'burner-inserter'`, needs coal). e.g. `placeInserterBetween('stone-furnace','transport-belt')`.
 - `await ops.connect(startX, startY, endX, endY, kind?, name?)` — lay a connection along an L-path: `kind`='belt' (oriented belts), 'pipe' (auto-connecting pipes), 'power' (electric poles spaced to auto-connect). Endpoints from `scan()`. Returns `data:{placed,reused,blocked:[{x,y}]}`; `ok:false` if a tile was blocked. e.g. `connect(engX,engY, labX,labY, 'power')`.
 - `await ops.placeNextTo(entity, targetName, side?)` — place `entity` on a free tile adjacent to the nearest `targetName` (the mod finds the spot). e.g. `placeNextTo('lab','small-electric-pole')`. Returns `data:{x,y,status}`.
-- `await ops.buildSteamPower()` — ONE-CALL steam power: places + fluid-connects pump→boiler→engine, fuels the boiler, wires a pole. Walk NEXT TO water first (`findNearest('water')` → `walkTo`) and hold 1 offshore-pump + 1 boiler + 1 steam-engine + ~10 coal. Returns `{ok, pump, boiler, engine, …}`.
+- `await ops.buildSteamPower()` — ONE-CALL steam power: places + fluid-connects pump→boiler→engine, fuels the boiler. Walk NEXT TO water first (`findNearest('water')` → `walkTo`) and hold 1 offshore-pump + 1 boiler + 1 steam-engine + ~10 coal. It wires a pole ONLY IF you already hold one; otherwise the engine produces steam but stays `not_plugged_in` (`powered:false` in the result) — then use `connectPowerTo(...)`. Returns `{ok, powered, pump, boiler, engine, …}`.
+- `await ops.connectPowerTo(targetName)` — power a machine from your steam-engine: finds the nearest engine + `targetName`, ENSURES you hold a pole (crafts it from copper-plate + wood — automate copper first), then lays the pole line between them. THE fix for a `not_plugged_in`/`no_power` machine. e.g. `connectPowerTo('lab')`.
 
 **Perception & knowledge (read off the live game — never recall from memory)**
 - `await ops.scan(radius?)` / `await ops.renderMap(radius?, center?)` — see above (status + visual).
