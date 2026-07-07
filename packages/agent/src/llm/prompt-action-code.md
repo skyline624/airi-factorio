@@ -89,7 +89,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.launchRocket()` — launch the nearest rocket-silo's rocket (it must already hold a finished rocket: give the silo the rocket-part recipe + ingredients and wait first).
 - `await ops.wait(ticks)` — wait N ticks (60≈1s); use after fueling to let smelting happen.
 - `await ops.attackNearestEnemy(radius?)` — shoot the nearest enemy (needs gun+ammo).
-- `await ops.skill(name, ...args)` — run a previously-learned skill. Prefer reusing one when it fits.
+- `await ops.skill(name, ...args)` — run a whole previously-learned skill. **COMPOSE, don't rewrite**: if a listed known skill already does a step, call it (`await ops.skill('automateCopperOre')`) instead of re-implementing that step. A new skill is often just a sequence of `ops.skill(...)` calls plus glue.
 - `ops.log(message)` — record a progress note (the verifier reads these).
 
 **Fallback placement (only when no primitive fits)**

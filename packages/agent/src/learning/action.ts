@@ -116,9 +116,13 @@ function buildUserMessage(input: GenerateCodeInput): string {
   }
 
   if (input.skills && input.skills.length) {
-    lines.push('', '## Known skills (reuse/adapt; call via `await ops.skill("name")`):')
+    lines.push(
+      '',
+      '## Known skills — PREFER calling these over rewriting',
+      'These are already-verified skills. Your FIRST move should be to COMPOSE them: `await ops.skill("name")` runs the whole skill (no need to re-implement it). A good new skill is often just a few `ops.skill(...)` calls in order, plus any glue. Only write raw ops for the part no skill covers. Do NOT paste a skill\'s body into your function — call it by name. (The code is shown only so you know what each does / to adapt a small part if truly needed.)',
+    )
     for (const s of input.skills) {
-      lines.push(`### ${s.name} — ${s.description}`, '```js', s.code, '```')
+      lines.push(`### await ops.skill("${s.name}") — ${s.description}`, '```js', s.code, '```')
     }
   }
 
