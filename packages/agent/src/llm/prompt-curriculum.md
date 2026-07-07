@@ -34,7 +34,7 @@ Principles:
 End with a `Check:` line: a machine-verifiable criterion the agent checks IN CODE (no guessing). Pick the `kind` that proves THIS objective is done, using Factorio INTERNAL names:
 - **`acquire`** + `item` + `count` — you GAIN N of an item (mine / collect / craft / smelt into hand). e.g. `Check: acquire iron-ore 20`.
 - **`produce`** + `item` + `count` — a MACHINE makes N of the item (the force PRODUCTION counter rises). **Use this for EVERY automation/working/feeds/running objective** — it is the proof the chain actually RUNS (a drill+furnace that's `working` shows up as iron-plate being produced). e.g. `Check: produce iron-plate 5`.
-- **`build`** + `entity` + `count` — a NEW entity exists. e.g. `Check: build assembling-machine-1 1`. Prefer `produce` when the point is the machine WORKING, not merely existing.
+- **`build`** + `entity` + `count` — a machine is PLACED ON THE MAP (exists as a built entity in the world). e.g. `Check: build assembling-machine-1 1`. ⚠️ CRAFTING a machine into your inventory is NOT `build` — it's `acquire` (you HOLD the item; it isn't placed yet). "Craft 1 burner-mining-drill" → `Check: acquire burner-mining-drill 1`. "Place the drill on the ore patch" → `Check: build burner-mining-drill 1`. Prefer `produce` when the point is the machine WORKING, not merely existing.
 - **`research`** — a technology completes → `Check: research`.
 
 The `Check:` MUST match the objective (same item/entity/count). If you are unsure of the right kind, omit the line — the agent then uses its heuristic check. Default `count` is 1 if omitted.

@@ -140,10 +140,10 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   // Failed objectives WITH their critique (why they failed) so the curriculum can fix the
   // cause / pick a different prerequisite instead of blindly re-proposing the same string.
   const failedDetails: { objective: string, critique: string }[] = []
-  // Consecutive-repeat guard: how many times in a row the SAME objective was proposed after
-  // failing. Once it repeats, we hard-forbid it in the next curriculum prompt to break loops.
-  let lastFailedObjective: string | null = null
-  let repeatCount = 0
+  // TOTAL failure count per (normalised) objective — NOT just consecutive. A curriculum can
+  // loop across N alternating objectives (A fails, B succeeds, A fails again…), so a purely
+  // consecutive counter never fires. Counting total failures per objective catches those cycles.
+  const failCounts = new Map<string, number>()
 
   /** Normalised objective for repeat comparison (trim + lowercase + collapse whitespace). */
   const normObjective = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, ' ')
@@ -184,24 +184,17 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       const name = extractEntryName(result.code)
       const stored = name ? await library.add({ name, code: result.code, objective }) : null
       completed.push(objective)
-      lastFailedObjective = null
-      repeatCount = 0
       logger.withFields({ attempts: result.attempts, skill: stored?.name, description: stored?.description }).log('✅ Objective achieved and skill stored')
       await deps.say(`Done: ${objective}`).catch(() => {})
       return true
     }
     const critique = result.verdict?.critique ?? 'no critique'
     failedDetails.push({ objective, critique })
-    // Track consecutive repeats of the SAME failed objective so the curriculum loop can
-    // hard-forbid it next time instead of re-proposing it forever.
-    if (lastFailedObjective !== null && normObjective(lastFailedObjective) === normObjective(objective)) {
-      repeatCount += 1
-    }
-    else {
-      repeatCount = 1
-    }
-    lastFailedObjective = objective
-    logger.withFields({ attempts: result.attempts, critique, repeatCount }).warn('❌ Objective not achieved within the retry budget')
+    // Total failures for THIS objective (across the whole run, not just consecutively).
+    const key = normObjective(objective)
+    const failTotal = (failCounts.get(key) ?? 0) + 1
+    failCounts.set(key, failTotal)
+    logger.withFields({ attempts: result.attempts, critique, failTotal }).warn('❌ Objective not achieved within the retry budget')
     await deps.say(`I could not finish: ${objective}`).catch(() => {})
     return false
   }
@@ -267,9 +260,13 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           // A single LLM timeout/stall returns null here — it must NOT kill the whole run.
           // Retry the proposal a few times (the cloud relay usually recovers on the next call)
           // before giving up, so one transient hiccup doesn't end an otherwise healthy session.
-          // When the last objective failed 2+ times in a row, hard-forbid re-proposing it —
-          // this is the code guard that breaks the ~50x infinite loop the prompt alone didn't.
-          const forbidObjective = (repeatCount >= 2 && lastFailedObjective) ? lastFailedObjective : undefined
+          // Every objective that has FAILED 2+ times TOTAL is banned — this breaks both a simple
+          // repeat and an N-state cycle (A fails, B succeeds, A fails again…) the consecutive
+          // counter missed. We match by the failed objective's own text (the exact string).
+          const forbidObjectives = failedDetails
+            .map(f => f.objective)
+            .filter(o => (failCounts.get(normObjective(o)) ?? 0) >= 2)
+          const forbidSet = new Set(forbidObjectives.map(normObjective))
           let proposed: Awaited<ReturnType<typeof proposeNextObjective>> = null
           // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
           for (let r = 1; r <= 3 && !proposed && running; r++) {
@@ -283,12 +280,12 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
               skills: library.summary(),
               completed,
               failedDetails,
-              forbidObjective,
+              forbidObjectives: [...new Set(forbidObjectives)],
               model: deps.actionModel,
             })
-            // If the model ignored the ban and re-proposed the forbidden objective, reject it
-            // and retry so the loop can't re-run the stuck objective a third+ time.
-            if (proposed && forbidObjective && normObjective(proposed.objective) === normObjective(forbidObjective)) {
+            // If the model ignored the ban and re-proposed a forbidden objective, reject it and
+            // retry so the loop can't re-run a stuck objective a third+ time.
+            if (proposed && forbidSet.has(normObjective(proposed.objective))) {
               logger.withFields({ objective: proposed.objective }).warn('Curriculum re-proposed a forbidden (stuck) objective; rejecting and retrying')
               proposed = null
             }

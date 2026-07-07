@@ -18,8 +18,8 @@ export interface CurriculumInput {
   completed: string[]
   /** Recently-failed objectives WITH their critique (why they failed), so the curriculum can fix the cause or pick a different prerequisite instead of re-proposing the same string. */
   failedDetails: { objective: string, critique: string }[]
-  /** An objective that failed repeatedly — the curriculum MUST NOT re-propose it (loop breaker). */
-  forbidObjective?: string
+  /** Objectives that failed repeatedly — the curriculum MUST NOT re-propose any of them (loop breaker). */
+  forbidObjectives?: string[]
   model: string
   /** Injectable for tests; defaults to the real LLM completion. */
   complete?: typeof complete
@@ -140,8 +140,11 @@ function buildMessage(input: CurriculumInput): string {
     const rows = [...latest.entries()].slice(-6).map(([obj, crit]) => `"${obj}" → ${crit}`)
     lines.push('', 'RECENTLY FAILED (with WHY — FIX the stated cause, or pick a DIFFERENT prerequisite; do NOT re-propose the same objective):', ...rows)
   }
-  if (input.forbidObjective) {
-    lines.push('', `⛔ FORBIDDEN THIS TURN — this objective has failed repeatedly and is BANNED. Do NOT propose it or any near-rephrasing: "${input.forbidObjective}". Propose something DIFFERENT — a smaller prerequisite, a fix for its failure cause, or the next rung.`)
+  if (input.forbidObjectives && input.forbidObjectives.length) {
+    lines.push('', '⛔ FORBIDDEN — these objectives have FAILED repeatedly and are BANNED. Do NOT propose any of them or a near-rephrasing. Propose something DIFFERENT — a smaller prerequisite, a fix for the failure cause, or a DIFFERENT rung:')
+    for (const o of input.forbidObjectives.slice(-8)) {
+      lines.push(`- "${o}"`)
+    }
   }
   lines.push('', 'Propose the next objective as labelled lines (see output format in the system prompt).')
   return lines.join('\n')

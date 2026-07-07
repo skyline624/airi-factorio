@@ -108,7 +108,7 @@ describe('proposeNextObjective (Voyager-style line format)', () => {
   it('injects a FORBIDDEN ban line when forbidObjective is set (loop breaker)', async () => {
     let seenUser = ''
     const complete = async (m: { user: string | unknown[] }): Promise<string> => { seenUser = String(m.user); return 'Task: a different objective' }
-    await proposeNextObjective({ ...base, forbidObjective: 'Fuel the boiler at (27.5,-28)', complete })
+    await proposeNextObjective({ ...base, forbidObjectives: ['Fuel the boiler at (27.5,-28)'], complete })
     expect(seenUser).toContain('FORBIDDEN')
     expect(seenUser).toContain('Fuel the boiler at (27.5,-28)')
   })
