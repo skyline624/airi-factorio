@@ -502,10 +502,47 @@ export function createOps(deps: OpsDeps): Ops {
       const plate = SMELTS_TO[resource]
       const outputItem = plate ? 'stone-furnace' : 'wooden-chest'
 
-      // Guarantee we HOLD the drill AND its output BEFORE placing — placeDrillOn/placeChestAtDrill
-      // consume from the inventory and fail if empty (the #1 automateResource failure: a coal drill
-      // with no chest in hand → the chest step errors and the chain never completes, so the agent
-      // falls back to hand-mining). ensure crafts them (drill needs iron+gears; chest needs wood).
+      // REACH the patch first. findNearest searches 400 tiles (vs walkToEntity's 200), so a distant
+      // patch (the common coal case — the player wandered off) is still reachable.
+      const near = await ops.findNearest(resource)
+      const walk = near ? await ops.walkTo(near.x, near.y) : await ops.walkToEntity(resource, 200)
+      if (!walk.ok) {
+        return { ok: false, error: `automateResource: could not reach '${resource}': ${walk.error}` }
+      }
+
+      // IDEMPOTENCY: is a drill ALREADY mining this resource here? If so, REPAIR it (add output +
+      // fuel) instead of placing another — placeDrillOn is NOT idempotent (the mod stacks a new
+      // drill beside the patch each call), which is why re-proposing "Automate copper" piled up 4
+      // drills. Repair, don't rebuild.
+      const scan = await ops.scan(32)
+      const existing = scan.entities.filter(e => e.type === 'mining-drill' && e.mining === resource)
+      if (existing.length > 0) {
+        // Guarantee enough output items for the drills that still lack one (idempotent placers skip
+        // a drill that already has its output and don't consume an item for it).
+        const haveOut = await ops.ensure(outputItem, existing.length)
+        if (!haveOut.ok) {
+          return { ok: false, error: `automateResource: could not obtain ${existing.length}× '${outputItem}' to repair: ${haveOut.error}` }
+        }
+        // placeFurnaceAtDrill/placeChestAtDrill target the NEAREST drill — walk to each in turn so
+        // every stacked drill gets its output. Best-effort: a single-drill failure doesn't abort.
+        for (const d of existing) {
+          await ops.walkTo(d.x, d.y)
+          const out = plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem)
+          if (!out.ok) {
+            ops.log(`automateResource: repair — output for drill @${d.x},${d.y} failed: ${out.error}`)
+          }
+        }
+        // Fuel: move_items caps at `amount` TOTAL across nearby machines → scale to the drill count.
+        await ops.fuel('burner-mining-drill', 'coal', 5 * existing.length)
+        if (plate) {
+          await ops.fuel('stone-furnace', 'coal', 5 * existing.length)
+        }
+        return { ok: true, data: { resource, repaired: existing.length, output: plate ? 'furnace' : 'chest' } }
+      }
+
+      // BUILD (nothing here yet). Guarantee we HOLD the drill AND its output BEFORE placing —
+      // placeDrillOn/placeChestAtDrill consume from the inventory and fail if empty. ensure crafts
+      // them (drill needs iron+gears; chest needs wood).
       const haveDrill = await ops.ensure(drillName, 1)
       if (!haveDrill.ok) {
         return { ok: false, error: `automateResource: could not obtain a '${drillName}': ${haveDrill.error}` }
@@ -513,15 +550,6 @@ export function createOps(deps: OpsDeps): Ops {
       const haveOutput = await ops.ensure(outputItem, 1)
       if (!haveOutput.ok) {
         return { ok: false, error: `automateResource: could not obtain a '${outputItem}' for the drill output: ${haveOutput.error}` }
-      }
-
-      // Find-then-walk: findNearest searches 400 tiles (vs walkToEntity's 200), so a distant patch
-      // (the common coal case — the player wandered off) is still reachable. Fall back to the plain
-      // walk if findNearest returns nothing.
-      const near = await ops.findNearest(resource)
-      const walk = near ? await ops.walkTo(near.x, near.y) : await ops.walkToEntity(resource, 200)
-      if (!walk.ok) {
-        return { ok: false, error: `automateResource: could not reach '${resource}': ${walk.error}` }
       }
       const drill = await ops.placeDrillOn(resource, drillName)
       if (!drill.ok) {

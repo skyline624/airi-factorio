@@ -493,6 +493,33 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     // Coal doesn't smelt -> NO furnace.
     expect(cmds.some(s => s.includes('place_furnace_at_drill'))).toBe(false)
   })
+
+  it('automateResource is IDEMPOTENT: an existing drill on the resource is REPAIRED, not re-placed', async () => {
+    // A copper drill already mines the patch (status waiting_for_space, no output/fuel yet).
+    const raw = router({ 'coal': 50, 'stone-furnace': 2 }, (input) => {
+      if (input.includes('find_nearest')) {
+        return '{"name":"copper-ore","x":40,"y":-10,"distance":30}'
+      }
+      if (input.includes('scan_area')) {
+        return '{"origin":{"x":0,"y":0},"radius":32,"entities":[{"name":"burner-mining-drill","type":"mining-drill","x":41,"y":-11,"direction":"north","status":"waiting_for_space_in_destination","mining":"copper-ore"}],"resources":{}}'
+      }
+      if (input.includes('place_furnace_at_drill')) {
+        return '{"ok":true,"furnace":"stone-furnace","x":41,"y":-13,"reclaimed":0}'
+      }
+      return null
+    })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    const r = await ops.automateResource('copper-ore')
+    expect(r).toMatchObject({ ok: true, data: { repaired: 1 } })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    // REPAIR path: no new drill placed; the existing one gets its furnace + fuel.
+    expect(cmds.some(s => s.includes('place_drill_on'))).toBe(false)
+    expect(cmds.some(s => s.includes('place_furnace_at_drill'))).toBe(true)
+    expect(cmds.some(s => s.includes('move_items'))).toBe(true)
+  })
 })
 
 function makeMockOps(): Ops {
