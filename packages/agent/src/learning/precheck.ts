@@ -149,18 +149,21 @@ export function precheckVerdict(input: PrecheckInput): PrecheckResult {
  */
 export function evaluateSuccessCheck(check: SuccessCheck, input: PrecheckInput): PrecheckResult {
   const need = (typeof check.count === 'number' && check.count > 0) ? check.count : 1
-  const invGained = positiveDeltas(input.before.inventory, input.after.inventory)
   const entGained = positiveDeltas(input.before.entities, input.after.entities)
   const prodGained = (input.prodBefore && input.prodAfter) ? positiveDeltas(input.prodBefore, input.prodAfter) : {}
 
   switch (check.kind) {
     case 'acquire': {
       const item = check.item ?? ''
-      // Gained in the inventory OR produced (smelted output sits in a furnace, not the hand).
-      const got = Math.max(invGained[item] ?? 0, prodGained[item] ?? 0)
-      return got >= need
-        ? { decided: true, success: true, critique: '', reasoning: `${item} +${got} (need ${need})` }
-        : { decided: true, success: false, critique: `Need ${need}× '${item}', only +${got} this objective. Gather/craft more and check ok after each op.`, reasoning: `${item} +${got} < ${need}` }
+      // "acquire N" = HOLD N — pass if the inventory now HOLDS >= need, regardless of whether we
+      // just gained them or already had them. (Checking only the gain FAILs an objective the agent
+      // already satisfies — e.g. "craft 1 drill" when it already holds one — looping forever.)
+      // Also accept a production delta (smelted output that lands in a furnace, not the hand).
+      const held = input.after.inventory[item] ?? 0
+      const produced = prodGained[item] ?? 0
+      return (held >= need || produced >= need)
+        ? { decided: true, success: true, critique: '', reasoning: `${item}: hold ${held}, produced +${produced} (need ${need})` }
+        : { decided: true, success: false, critique: `Need ${need}× '${item}' — you hold ${held}. Gather/craft more and check ok after each op.`, reasoning: `${item} hold ${held} < ${need}` }
     }
     case 'produce': {
       const item = check.item ?? ''

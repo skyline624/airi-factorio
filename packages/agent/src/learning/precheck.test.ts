@@ -133,6 +133,17 @@ describe('evaluateSuccessCheck', () => {
     expect(r).toMatchObject({ decided: true, success: false })
   })
 
+  it('acquire: PASSES when the item is ALREADY held (no gain needed — "have N", not "gain N")', () => {
+    // The agent already holds 1 drill from an earlier objective; "acquire 1 drill" must PASS
+    // (it holds one) instead of failing on a +0 delta and looping the objective forever.
+    const r = evaluateSuccessCheck({ kind: 'acquire', item: 'burner-mining-drill', count: 1 }, {
+      objective: 'x',
+      before: state({ inventory: { 'burner-mining-drill': 1 } }),
+      after: state({ inventory: { 'burner-mining-drill': 1 } }),
+    })
+    expect(r).toMatchObject({ decided: true, success: true })
+  })
+
   it('produce: PASSES when the force production counter rose (the automation/working signal)', () => {
     const r = evaluateSuccessCheck({ kind: 'produce', item: 'iron-plate', count: 5 }, {
       objective: 'x',
