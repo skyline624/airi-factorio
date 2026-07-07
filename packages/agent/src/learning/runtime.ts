@@ -500,7 +500,25 @@ export function createOps(deps: OpsDeps): Ops {
       // everything else (coal, stone, uranium-ore, …) is already-finished -> a chest.
       const SMELTS_TO: Record<string, string> = { 'iron-ore': 'iron-plate', 'copper-ore': 'copper-plate' }
       const plate = SMELTS_TO[resource]
-      const outputItem = plate ? 'stone-furnace' : 'wooden-chest'
+
+      // Obtain the drill's output item and return the NAME we managed to get. A smeltable ore needs a
+      // furnace; coal/stone need a CHEST — but wooden-chest costs 2 wood, which is UNAVAILABLE on a
+      // desert map (dead trees give none). So fall back to iron-chest (8 iron-plate, and iron is the
+      // first thing automated). Returns null if none can be obtained → caller fails with guidance.
+      const ensureOutput = async (count: number): Promise<string | null> => {
+        if (plate) {
+          return (await ops.ensure('stone-furnace', count)).ok ? 'stone-furnace' : null
+        }
+        for (const chest of ['wooden-chest', 'iron-chest']) {
+          if ((await ops.ensure(chest, count)).ok) {
+            return chest
+          }
+        }
+        return null
+      }
+      const noOutputErr = plate
+        ? `automateResource: could not obtain a stone-furnace for '${resource}'`
+        : `automateResource: could not obtain a chest for '${resource}' — a wooden-chest needs 2 wood (none on desert maps) and an iron-chest needs 8 iron-plate; collect 8 iron-plate from a furnace first, then retry`
 
       // REACH the patch first. findNearest searches 400 tiles (vs walkToEntity's 200), so a distant
       // patch (the common coal case — the player wandered off) is still reachable.
@@ -519,9 +537,9 @@ export function createOps(deps: OpsDeps): Ops {
       if (existing.length > 0) {
         // Guarantee enough output items for the drills that still lack one (idempotent placers skip
         // a drill that already has its output and don't consume an item for it).
-        const haveOut = await ops.ensure(outputItem, existing.length)
-        if (!haveOut.ok) {
-          return { ok: false, error: `automateResource: could not obtain ${existing.length}× '${outputItem}' to repair: ${haveOut.error}` }
+        const outputItem = await ensureOutput(existing.length)
+        if (!outputItem) {
+          return { ok: false, error: noOutputErr }
         }
         // placeFurnaceAtDrill/placeChestAtDrill target the NEAREST drill — walk to each in turn so
         // every stacked drill gets its output. Best-effort: a single-drill failure doesn't abort.
@@ -542,14 +560,14 @@ export function createOps(deps: OpsDeps): Ops {
 
       // BUILD (nothing here yet). Guarantee we HOLD the drill AND its output BEFORE placing —
       // placeDrillOn/placeChestAtDrill consume from the inventory and fail if empty. ensure crafts
-      // them (drill needs iron+gears; chest needs wood).
+      // the drill (iron+gears); the output is picked/obtained by ensureOutput (furnace or a chest).
       const haveDrill = await ops.ensure(drillName, 1)
       if (!haveDrill.ok) {
         return { ok: false, error: `automateResource: could not obtain a '${drillName}': ${haveDrill.error}` }
       }
-      const haveOutput = await ops.ensure(outputItem, 1)
-      if (!haveOutput.ok) {
-        return { ok: false, error: `automateResource: could not obtain a '${outputItem}' for the drill output: ${haveOutput.error}` }
+      const outputItem = await ensureOutput(1)
+      if (!outputItem) {
+        return { ok: false, error: noOutputErr }
       }
       const drill = await ops.placeDrillOn(resource, drillName)
       if (!drill.ok) {
