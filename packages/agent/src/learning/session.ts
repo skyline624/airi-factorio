@@ -88,7 +88,9 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   // Player-centred resource scan: the ore patches (and how far) actually within reach.
   // The curriculum needs this to know what is REACHABLE — otherwise it can't tell the
   // agent is already standing on iron and keeps proposing "go find iron" forever.
-  const captureResources = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 64)'))
+  // Radius 128 (the mod cap) so the planner SEES resources out to the distance automateResource can
+  // actually walk (200) — at 64 it was blind to coal 64-200 tiles away and never proposed mining it.
+  const captureResources = async (): Promise<ScanResult> => parseScan(await deps.raw('/c remote.call(\'autorio_tools\', \'scan_area\', 128)'))
   // ASCII map centred on the player, given to the CURRICULUM so the planner sees spatial
   // reality (a general reads the map) — it can then catch a broken drill->furnace feed (an
   // uncovered `X`), overlaps, free space, etc., instead of mis-reading text status.

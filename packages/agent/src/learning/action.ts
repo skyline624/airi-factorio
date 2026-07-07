@@ -35,9 +35,15 @@ export interface GeneratedCode {
   raw: string
 }
 
+// Fuel/bootstrap-critical items always shown with an EXPLICIT count — even at 0 — so the planner
+// can SEE "coal:0" (a 0-count item is otherwise just absent from the inventory string, which the
+// model overlooks → it never realises the furnace can't be fueled and loops on iron).
+const KEY_ITEMS = ['coal', 'wood', 'iron-plate', 'copper-plate', 'stone']
+
 /** A compact, prompt-friendly view of the current state. */
 export function summarizeState(state: GameState): string {
   const inv = Object.entries(state.inventory).map(([k, v]) => `${k}:${v}`).join(', ') || '(empty)'
+  const key = KEY_ITEMS.map(k => `${k}:${state.inventory[k] ?? 0}`).join(', ')
   const ent = Object.entries(state.entities).map(([k, v]) => `${k}:${v}`).join(', ') || '(none)'
   const pos = state.position ? `(${Math.round(state.position.x)}, ${Math.round(state.position.y)})` : 'unknown'
   const health = (state.health !== undefined && state.maxHealth !== undefined)
@@ -45,6 +51,7 @@ export function summarizeState(state: GameState): string {
     : (state.health !== undefined ? `${Math.round(state.health)}` : 'unknown')
   return [
     `- inventory: ${inv}`,
+    `- KEY ITEMS (0 = you have NONE): ${key}`,
     `- player-built entities nearby: ${ent}`,
     `- position: ${pos}`,
     `- health: ${health}`,

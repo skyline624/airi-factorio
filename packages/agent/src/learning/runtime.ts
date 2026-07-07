@@ -515,7 +515,11 @@ export function createOps(deps: OpsDeps): Ops {
         return { ok: false, error: `automateResource: could not obtain a '${outputItem}' for the drill output: ${haveOutput.error}` }
       }
 
-      const walk = await ops.walkToEntity(resource, 200)
+      // Find-then-walk: findNearest searches 400 tiles (vs walkToEntity's 200), so a distant patch
+      // (the common coal case — the player wandered off) is still reachable. Fall back to the plain
+      // walk if findNearest returns nothing.
+      const near = await ops.findNearest(resource)
+      const walk = near ? await ops.walkTo(near.x, near.y) : await ops.walkToEntity(resource, 200)
       if (!walk.ok) {
         return { ok: false, error: `automateResource: could not reach '${resource}': ${walk.error}` }
       }

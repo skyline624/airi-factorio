@@ -468,6 +468,9 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
   it('automateResource on COAL places a drill + CHEST (no furnace) and fuels the drill', async () => {
     // Hold the drill + chest + coal so `ensure` short-circuits — the coal bootstrap must not need a craft here.
     const raw = router({ 'coal': 50, 'burner-mining-drill': 1, 'wooden-chest': 1 }, (input) => {
+      if (input.includes('find_nearest')) {
+        return '{"name":"coal","x":250,"y":-30,"distance":260}' // distant patch — reachable via find-then-walk
+      }
       if (input.includes('place_drill_on')) {
         return '{"ok":true,"drill":"burner-mining-drill","x":9,"y":9,"mining":"coal"}'
       }
@@ -482,6 +485,9 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     const ops = createOps({ raw, settleBus: bus })
     await expect(ops.automateResource('coal')).resolves.toMatchObject({ ok: true, data: { output: 'chest' } })
     const cmds = raw.mock.calls.map(c => String(c[0]))
+    // find-then-walk: findNearest locates the distant patch, then walkTo its coords.
+    expect(cmds.some(s => s.includes(`'find_nearest','coal'`))).toBe(true)
+    expect(cmds.some(s => s.includes(`'walk_to_position',250,-30`))).toBe(true)
     expect(cmds.some(s => s.includes(`'place_drill_on','coal'`))).toBe(true)
     expect(cmds.some(s => s.includes('place_chest_at_drill'))).toBe(true)
     // Coal doesn't smelt -> NO furnace.

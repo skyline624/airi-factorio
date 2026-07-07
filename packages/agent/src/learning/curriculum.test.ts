@@ -1,6 +1,6 @@
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { proposeNextObjective } from './curriculum'
+import { proposeNextObjective, stripCoordinates } from './curriculum'
 
 const state: GameState = { tick: 0, inventory: {}, entities: {} }
 const base = { ultimateGoal: 'Launch a rocket.', state, skills: [], completed: [], failedDetails: [], model: 'm' }
@@ -9,15 +9,15 @@ describe('proposeNextObjective (Voyager-style line format)', () => {
   it('parses the four labelled lines', async () => {
     const complete = async () => [
       'Reasoning: need plates to craft belts',
-      'Task: Smelt 20 iron plates',
+      'Task: Smelt some iron plates',
       'Context: load ore + coal, then wait',
-      'Check: produce iron-plate 20',
+      'Check: produce iron-plate 3',
     ].join('\n')
     const p = await proposeNextObjective({ ...base, complete })
-    expect(p?.objective).toBe('Smelt 20 iron plates')
+    expect(p?.objective).toBe('Smelt some iron plates')
     expect(p?.reasoning).toContain('belts')
     expect(p?.context).toContain('coal')
-    expect(p?.successCheck).toMatchObject({ kind: 'produce', item: 'iron-plate', count: 20 })
+    expect(p?.successCheck).toMatchObject({ kind: 'produce', item: 'iron-plate', count: 3 })
   })
 
   it('parses when the model babbles around the labels (the Voyager robustness)', async () => {
@@ -111,5 +111,36 @@ describe('proposeNextObjective (Voyager-style line format)', () => {
     await proposeNextObjective({ ...base, forbidObjectives: ['Fuel the boiler at (27.5,-28)'], complete })
     expect(seenUser).toContain('FORBIDDEN')
     expect(seenUser).toContain('Fuel the boiler at (27.5,-28)')
+  })
+
+  it('clamps an over-cap produce count (30 -> 5) so the check is reachable', async () => {
+    const complete = async () => 'Task: Smelt lots of iron\nCheck: produce iron-plate 30'
+    const p = await proposeNextObjective({ ...base, complete })
+    expect(p?.successCheck).toMatchObject({ kind: 'produce', item: 'iron-plate', count: 5 })
+  })
+
+  it('clamps an over-cap acquire count (99 -> 20)', async () => {
+    const complete = async () => 'Task: Mine copper\nCheck: acquire copper-ore 99'
+    const p = await proposeNextObjective({ ...base, complete })
+    expect(p?.successCheck).toMatchObject({ kind: 'acquire', item: 'copper-ore', count: 20 })
+  })
+
+  it('strips a hardcoded coordinate from the objective (the decider must not leak coords)', async () => {
+    const complete = async () => 'Task: Fuel the stone-furnace at (-4, -46) with coal'
+    const p = await proposeNextObjective({ ...base, complete })
+    expect(p?.objective).not.toMatch(/\(-?\d+/)
+    expect(p?.objective).toContain('the right spot')
+  })
+})
+
+describe('stripCoordinates', () => {
+  it('replaces "at (x, y)" with "at the right spot"', () => {
+    expect(stripCoordinates('Place a drill at (12, -7) now')).toBe('Place a drill at the right spot now')
+  })
+  it('removes a bare (x, y) tuple', () => {
+    expect(stripCoordinates('The furnace (-4, -46) needs coal')).toBe('The furnace needs coal')
+  })
+  it('leaves coordinate-free text untouched', () => {
+    expect(stripCoordinates('Automate coal on the nearest patch')).toBe('Automate coal on the nearest patch')
   })
 })

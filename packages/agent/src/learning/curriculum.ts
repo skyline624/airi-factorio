@@ -54,8 +54,14 @@ function parseCheckLine(rest: string): SuccessCheck | undefined {
     return undefined
   }
   const countRaw = parts[2]
-  const count = countRaw !== undefined ? Number.parseInt(countRaw, 10) : 1
-  const out: SuccessCheck = { kind, count: Number.isFinite(count) && count > 0 ? Math.floor(count) : 1 }
+  const parsed = countRaw !== undefined ? Number.parseInt(countRaw, 10) : 1
+  const raw = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1
+  // CLAMP the count to what ONE skill run can achieve — the model routinely ignores the prompt's
+  // 1-5/1-20 caps and emits "produce iron-plate 30", which can NEVER pass in the retry budget and
+  // loops the objective forever. Enforcing the cap in code (not prose) makes every check reachable.
+  const cap = kind === 'produce' ? 5 : (kind === 'acquire' ? 20 : 1)
+  const count = Math.min(raw, cap)
+  const out: SuccessCheck = { kind, count }
   if (kind === 'build') {
     out.entity = target
   }
@@ -151,6 +157,20 @@ function buildMessage(input: CurriculumInput): string {
 }
 
 /** Propose the next objective toward the ultimate goal. Returns null if the LLM gives no usable objective. */
+/**
+ * Strip literal tile coordinates like "(-4, -46)" from an objective/context. The prompt forbids
+ * coordinates (they go stale/wrong across maps and leak the decider's guess into the executor as
+ * a false target), but the model emits them anyway — so we remove them in code. The executor
+ * derives the real tile at runtime from renderMap/scan/findNearest.
+ */
+export function stripCoordinates(text: string): string {
+  return text
+    .replace(/\bat\s*\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/gi, 'at the right spot')
+    .replace(/\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 export async function proposeNextObjective(input: CurriculumInput): Promise<ProposedObjective | null> {
   const call = input.complete ?? complete
   const content = await call({ system: curriculumPrompt, user: buildMessage(input), model: input.model })
@@ -161,10 +181,12 @@ export async function proposeNextObjective(input: CurriculumInput): Promise<Prop
   if (!parsed.objective || !parsed.objective.trim()) {
     return null
   }
+  const objective = stripCoordinates(parsed.objective.trim())
+  const context = stripCoordinates(parsed.context)
   return {
     reasoning: parsed.reasoning,
-    objective: parsed.objective.trim(),
-    context: parsed.context,
+    objective,
+    context,
     successCheck: parsed.successCheck,
   }
 }
