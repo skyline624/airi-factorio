@@ -500,6 +500,20 @@ export function createOps(deps: OpsDeps): Ops {
       // everything else (coal, stone, uranium-ore, …) is already-finished -> a chest.
       const SMELTS_TO: Record<string, string> = { 'iron-ore': 'iron-plate', 'copper-ore': 'copper-plate' }
       const plate = SMELTS_TO[resource]
+      const outputItem = plate ? 'stone-furnace' : 'wooden-chest'
+
+      // Guarantee we HOLD the drill AND its output BEFORE placing — placeDrillOn/placeChestAtDrill
+      // consume from the inventory and fail if empty (the #1 automateResource failure: a coal drill
+      // with no chest in hand → the chest step errors and the chain never completes, so the agent
+      // falls back to hand-mining). ensure crafts them (drill needs iron+gears; chest needs wood).
+      const haveDrill = await ops.ensure(drillName, 1)
+      if (!haveDrill.ok) {
+        return { ok: false, error: `automateResource: could not obtain a '${drillName}': ${haveDrill.error}` }
+      }
+      const haveOutput = await ops.ensure(outputItem, 1)
+      if (!haveOutput.ok) {
+        return { ok: false, error: `automateResource: could not obtain a '${outputItem}' for the drill output: ${haveOutput.error}` }
+      }
 
       const walk = await ops.walkToEntity(resource, 200)
       if (!walk.ok) {
@@ -510,7 +524,7 @@ export function createOps(deps: OpsDeps): Ops {
         return { ok: false, error: `automateResource: could not seat a drill on '${resource}': ${drill.error}` }
       }
       // The drill's output: a furnace (smeltable) so it becomes plate, else a chest (coal/stone).
-      const output = plate ? await ops.placeFurnaceAtDrill() : await ops.placeChestAtDrill()
+      const output = plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem)
       if (!output.ok) {
         return { ok: false, error: `automateResource: could not add the drill's ${plate ? 'furnace' : 'chest'} output: ${output.error}` }
       }

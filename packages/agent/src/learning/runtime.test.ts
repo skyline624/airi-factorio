@@ -444,7 +444,8 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
   })
 
   it('automateResource on a SMELTABLE ore places a drill + FURNACE and fuels both', async () => {
-    const raw = router({ coal: 50 }, (input) => {
+    // Hold the drill + furnace + coal so `ensure` short-circuits (already-held) and we exercise the placement path.
+    const raw = router({ 'coal': 50, 'burner-mining-drill': 1, 'stone-furnace': 1 }, (input) => {
       if (input.includes('place_drill_on')) {
         return '{"ok":true,"drill":"burner-mining-drill","x":5,"y":5,"mining":"iron-ore"}'
       }
@@ -465,7 +466,8 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
   })
 
   it('automateResource on COAL places a drill + CHEST (no furnace) and fuels the drill', async () => {
-    const raw = router({ coal: 50 }, (input) => {
+    // Hold the drill + chest + coal so `ensure` short-circuits — the coal bootstrap must not need a craft here.
+    const raw = router({ 'coal': 50, 'burner-mining-drill': 1, 'wooden-chest': 1 }, (input) => {
       if (input.includes('place_drill_on')) {
         return '{"ok":true,"drill":"burner-mining-drill","x":9,"y":9,"mining":"coal"}'
       }
