@@ -199,6 +199,18 @@ describe('createOps', () => {
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_furnace_at_drill','stone-furnace'`))
   })
 
+  it('placeChestAtDrill dispatches place_chest_at_drill and returns the placed chest tile', async () => {
+    const raw = vi.fn(async () => '{"ok":true,"chest":"wooden-chest","x":16,"y":73,"reclaimed":0}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    await expect(ops.placeChestAtDrill()).resolves.toEqual({ ok: true, data: { chest: 'wooden-chest', x: 16, y: 73, reclaimed: 0 } })
+    expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_chest_at_drill','wooden-chest'`))
+  })
+
+  it('placeChestAtDrill propagates the mod error when the output is blocked', async () => {
+    const ops = createOps({ raw: async () => '{"ok":false,"error":"could not seat a chest on the drill output tile (still blocked after clearing)"}', settleBus: createSettleBus(1000) })
+    await expect(ops.placeChestAtDrill()).resolves.toMatchObject({ ok: false, error: expect.stringContaining('blocked') })
+  })
+
   it('placeBeltLine returns placed/reused/blocked and formats the blocked tiles on failure', async () => {
     const ok = createOps({ raw: async () => '{"ok":true,"placed":8,"reused":0,"blocked":[]}', settleBus: createSettleBus(1000) })
     await expect(ok.placeBeltLine(10, 4, 10, 12)).resolves.toEqual({ ok: true, data: { placed: 8, reused: 0, blocked: [] } })
@@ -437,6 +449,7 @@ function makeMockOps(): Ops {
     placementSpots: async () => ({ spots: [] }),
     placeDrillOn: async () => ({ ok: true }),
     placeFurnaceAtDrill: async () => ({ ok: true }),
+    placeChestAtDrill: async () => ({ ok: true }),
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
     connect: async () => ({ ok: true }),

@@ -815,6 +815,117 @@ export function create_tools_remote_interface() {
       rcon.print(helpers.table_to_json({ ok: true, furnace: use_name, x: math.floor(ent.position.x * 10) / 10, y: math.floor(ent.position.y * 10) / 10, reclaimed }))
       return true
     },
+    // PLACEMENT PRIMITIVE: put a CHEST on a drill's output tile — the coal/stone equivalent of
+    // place_furnace_at_drill (those resources don't smelt, so a furnace is wrong; the drill must
+    // drop into a chest/belt). Same drop-tile geometry, but a chest is 1x1 so the target is the
+    // single drop-tile centre. IDEMPOTENT (a container already on the drop = success) and RECLAIMS
+    // the agent's own misplaced chests blocking the spot. `place_next_to` can't do this: it anchors
+    // on the drill CENTRE and returns any free adjacent tile, missing the output tile.
+    place_chest_at_drill: (chest_name: string = 'wooden-chest') => {
+      const player = get_player()
+      const inv = player !== undefined ? player.get_main_inventory() : undefined
+      if (player === undefined || inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player/inventory' }))
+        return false
+      }
+      const surface = player.surface
+
+      let use_name = chest_name
+      if (inv.get_item_count(use_name) === 0) {
+        if (inv.get_item_count('wooden-chest') > 0) {
+          use_name = 'wooden-chest'
+        }
+        else if (inv.get_item_count('iron-chest') > 0) {
+          use_name = 'iron-chest'
+        }
+        else if (inv.get_item_count('steel-chest') > 0) {
+          use_name = 'steel-chest'
+        }
+        else {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no ${chest_name} (or any chest) in inventory` }))
+          return false
+        }
+      }
+
+      const drills = surface.find_entities_filtered({ position: player.position, radius: 48, type: 'mining-drill' })
+      if (drills.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drill = get_nearest_entity(player, drills)
+      if (drill === undefined || drill === null) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no mining-drill within 48 tiles (place a drill first)' }))
+        return false
+      }
+      const drop = drill.drop_position
+      const dc = drill.position
+      // A 1x1 chest sits on the drop TILE centre.
+      const dtx = math.floor(drop.x) + 0.5
+      const dty = math.floor(drop.y) + 0.5
+      const chosen = { x: dtx, y: dty }
+
+      function covers(box: BoundingBox, px: number, py: number): boolean {
+        return px >= box.left_top.x && px <= box.right_bottom.x && py >= box.left_top.y && py <= box.right_bottom.y
+      }
+
+      // Idempotent: a container already on the drop tile means the feed is set.
+      for (const c of surface.find_entities_filtered({ position: drop, radius: 1.5, type: 'container' })) {
+        if (covers(c.bounding_box, dtx, dty)) {
+          rcon.print(helpers.table_to_json({ ok: true, chest: c.name, x: math.floor(c.position.x * 10) / 10, y: math.floor(c.position.y * 10) / 10, note: 'already on the drill output' }))
+          return true
+        }
+      }
+
+      // `script` (not `manual`) so the agent's own character standing on the output tile isn't
+      // counted as a collision (we shove it clear before create_entity below).
+      function placeable(): boolean {
+        return surface.can_place_entity({ name: use_name, position: chosen, force: player!.force, build_check_type: defines.build_check_type.script })
+      }
+
+      let reclaimed = 0
+      // Blocked: reclaim the agent's own misplaced containers + dropped items near the spot, retry.
+      if (!placeable()) {
+        for (const c of surface.find_entities_filtered({ position: drop, radius: 1.5, type: 'container' })) {
+          if (!c.mine({ inventory: inv, force: true, raise_destroyed: true })) {
+            c.destroy()
+          }
+          reclaimed += 1
+        }
+        for (const g of surface.find_entities_filtered({ position: drop, radius: 1.5, name: 'item-on-ground' })) {
+          g.destroy()
+        }
+      }
+
+      if (!placeable()) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'could not seat a chest on the drill output tile (still blocked after clearing)' }))
+        return false
+      }
+
+      // Move the character clear so create_entity doesn't trap it inside the new chest.
+      const cp = player.position
+      if (player.character !== undefined && (cp.x - drop.x) ** 2 + (cp.y - drop.y) ** 2 < 6.25) {
+        const safe = surface.find_non_colliding_position('character', { x: dc.x, y: dc.y + 3 }, 12, 0.5)
+        if (safe !== undefined) {
+          player.teleport(safe)
+        }
+      }
+
+      const ent = surface.create_entity({ name: use_name, position: chosen, force: player.force, raise_built: true, player })
+      if (ent === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
+        return false
+      }
+      if (!covers(ent.bounding_box, dtx, dty)) {
+        ent.destroy()
+        rcon.print(helpers.table_to_json({ ok: false, error: 'placed chest did not cover the drill output' }))
+        return false
+      }
+
+      inv.remove({ name: use_name, count: 1 })
+      log(`[AUTORIO] Placed ${use_name} on the output of drill at (${dc.x},${dc.y}); reclaimed ${reclaimed} misplaced chest(s)`)
+      rcon.print(helpers.table_to_json({ ok: true, chest: use_name, x: math.floor(ent.position.x * 10) / 10, y: math.floor(ent.position.y * 10) / 10, reclaimed }))
+      return true
+    },
     // PLACEMENT PRIMITIVE (FLE connect_entities): lay a connection from (sx,sy) to (ex,ey)
     // along an L-path. `kind`='belt' (transport-belts oriented toward the flow), 'pipe'
     // (pipes auto-connect, no facing), or 'power' (electric poles spaced under their wire

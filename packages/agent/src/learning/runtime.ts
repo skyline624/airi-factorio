@@ -289,6 +289,11 @@ export function createOps(deps: OpsDeps): Ops {
       const d = extractLastJsonLine<{ ok?: boolean, error?: string, reclaimed?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_furnace_at_drill',${luaArg(furnaceName)})`))
       return (d && d.ok === true) ? { ok: true, data: { reclaimed: d.reclaimed ?? 0 } } : { ok: false, error: (d && d.error) ? d.error : 'place_furnace_at_drill failed' }
     },
+    placeChestAtDrill: async (chestName = 'wooden-chest'): Promise<OpResult> => {
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, chest?: string, x?: number, y?: number, reclaimed?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_chest_at_drill',${luaArg(chestName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { chest: d.chest, x: d.x, y: d.y, reclaimed: d.reclaimed ?? 0 } } : { ok: false, error: (d && d.error) ? d.error : 'place_chest_at_drill failed' }
+    },
     placeBeltLine: async (startX: number, startY: number, endX: number, endY: number, beltName = 'transport-belt'): Promise<OpResult> => {
       bumpOpCount()
       const d = extractLastJsonLine<{ ok?: boolean, error?: string, placed?: number, reused?: number, blocked?: Array<{ x: number, y: number }> }>(

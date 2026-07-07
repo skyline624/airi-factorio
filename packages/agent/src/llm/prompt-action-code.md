@@ -41,7 +41,7 @@ You almost never compute tile coordinates. For each build there is a **placement
 
 After building + fueling, `await ops.scan()` and check EACH machine's `status`. Success = `working`. A machine that is NOT working is almost always **correctly placed but missing an input** — supply it, do NOT move it:
 - `no_fuel` → load coal (`moveItems` coal, `toEntity:true`); if you hold none, go mine some. Fuel the drill before the furnace it feeds.
-- `waiting_for_space_in_destination` on a drill → add its output. On a SMELTABLE ore (iron/copper): `await ops.placeFurnaceAtDrill()`. On COAL or STONE (they don't smelt): a chest or belt instead — `placeNextTo('wooden-chest', '<drill>')` or a belt — NOT a furnace. NOT a relocation.
+- `waiting_for_space_in_destination` on a drill → add its output. On a SMELTABLE ore (iron/copper): `await ops.placeFurnaceAtDrill()`. On COAL or STONE (they don't smelt): `await ops.placeChestAtDrill()` (puts a chest on the exact drop tile — do NOT use `placeNextTo`, it misses the output tile). NOT a furnace, NOT a relocation.
 - `no_power` → needs electricity (`buildSteamPower` + poles), not fuel.
 - `full_output` → drain its output (`moveItems` `toEntity:false`, or a belt/chest).
 - `no_minable_resources` / `n/a` on a drill → genuinely misplaced → mine it back and `placeDrillOn(<resource>)` again.
@@ -57,6 +57,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 **Placement primitives (PREFER these — the mod computes the tile + orientation)**
 - `await ops.placeDrillOn(resource, drillName?)` — seat a mining drill ON the nearest patch of `resource` and verify it mines it. `drillName` defaults `'burner-mining-drill'`. e.g. `placeDrillOn('iron-ore')`.
 - `await ops.placeFurnaceAtDrill(furnaceName?)` — put a furnace ON the nearest drill's output tile (hands-free feed; rung 2). ONLY for a drill mining a SMELTABLE ore (iron-ore, copper-ore). Do NOT use it behind a coal or stone drill — those don't smelt; give them a chest/belt instead. Idempotent. Then fuel both with coal.
+- `await ops.placeChestAtDrill(chestName?)` — put a CHEST on the nearest drill's output tile (the coal/stone equivalent of placeFurnaceAtDrill). Use for a COAL or STONE drill reading `waiting_for_space_in_destination` — they don't smelt so a furnace is wrong. The mod computes the exact drop tile; `placeNextTo` can't (it misses it). Defaults 'wooden-chest'. Idempotent.
 - `await ops.placeBeltLine(startX, startY, endX, endY, beltName?)` — lay an L-shaped line of aligned belts. Returns `data:{placed,reused,blocked:[{x,y}]}`; `ok:false` if a tile was blocked (mine the obstacle / reroute).
 - `await ops.placeInserterBetween(fromName, toName, inserterName?)` — place a correctly-oriented inserter so items flow `from`→`to` (defaults `'burner-inserter'`, needs coal). e.g. `placeInserterBetween('stone-furnace','transport-belt')`.
 - `await ops.connect(startX, startY, endX, endY, kind?, name?)` — lay a connection along an L-path: `kind`='belt' (oriented belts), 'pipe' (auto-connecting pipes), 'power' (electric poles spaced to auto-connect). Endpoints from `scan()`. Returns `data:{placed,reused,blocked:[{x,y}]}`; `ok:false` if a tile was blocked. e.g. `connect(engX,engY, labX,labY, 'power')`.

@@ -38,6 +38,7 @@ function mockOps(): Ops {
     placementSpots: async () => ({ spots: [] }),
     placeDrillOn: async () => ({ ok: true }),
     placeFurnaceAtDrill: async () => ({ ok: true }),
+    placeChestAtDrill: async () => ({ ok: true }),
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
     connect: async () => ({ ok: true }),

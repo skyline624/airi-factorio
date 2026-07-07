@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { proposeNextObjective } from './curriculum'
 
 const state: GameState = { tick: 0, inventory: {}, entities: {} }
-const base = { ultimateGoal: 'Launch a rocket.', state, skills: [], completed: [], failed: [], model: 'm' }
+const base = { ultimateGoal: 'Launch a rocket.', state, skills: [], completed: [], failedDetails: [], model: 'm' }
 
 describe('proposeNextObjective (Voyager-style line format)', () => {
   it('parses the four labelled lines', async () => {
@@ -86,5 +86,30 @@ describe('proposeNextObjective (Voyager-style line format)', () => {
     const complete = async () => '\n\nTask: Smelt 5 iron plates\n'
     const p = await proposeNextObjective({ ...base, complete })
     expect(p?.objective).toBe('Smelt 5 iron plates')
+  })
+
+  it('renders RECENTLY FAILED with the critique, deduped to one row per objective (latest critique)', async () => {
+    let seenUser = ''
+    const complete = async (m: { user: string | unknown[] }): Promise<string> => { seenUser = String(m.user); return 'Task: do something else' }
+    await proposeNextObjective({
+      ...base,
+      failedDetails: [
+        { objective: 'Fuel the boiler', critique: 'boiler had no water' },
+        { objective: 'Fuel the boiler', critique: 'still no water — pipes not connected' },
+      ],
+      complete,
+    })
+    // One row for the repeated objective, carrying the LATEST critique (not the same string x2).
+    expect(seenUser).toContain('RECENTLY FAILED')
+    expect(seenUser).toContain('still no water — pipes not connected')
+    expect((seenUser.match(/"Fuel the boiler"/g) ?? []).length).toBe(1)
+  })
+
+  it('injects a FORBIDDEN ban line when forbidObjective is set (loop breaker)', async () => {
+    let seenUser = ''
+    const complete = async (m: { user: string | unknown[] }): Promise<string> => { seenUser = String(m.user); return 'Task: a different objective' }
+    await proposeNextObjective({ ...base, forbidObjective: 'Fuel the boiler at (27.5,-28)', complete })
+    expect(seenUser).toContain('FORBIDDEN')
+    expect(seenUser).toContain('Fuel the boiler at (27.5,-28)')
   })
 })

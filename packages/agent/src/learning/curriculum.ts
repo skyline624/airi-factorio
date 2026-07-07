@@ -16,7 +16,10 @@ export interface CurriculumInput {
   productionSummary?: string
   skills: { name: string, description: string }[]
   completed: string[]
-  failed: string[]
+  /** Recently-failed objectives WITH their critique (why they failed), so the curriculum can fix the cause or pick a different prerequisite instead of re-proposing the same string. */
+  failedDetails: { objective: string, critique: string }[]
+  /** An objective that failed repeatedly — the curriculum MUST NOT re-propose it (loop breaker). */
+  forbidObjective?: string
   model: string
   /** Injectable for tests; defaults to the real LLM completion. */
   complete?: typeof complete
@@ -123,10 +126,22 @@ function buildMessage(input: CurriculumInput): string {
     }
   }
   if (input.completed.length) {
-    lines.push('', `ALREADY DONE (do NOT repeat): ${input.completed.slice(-12).join(' | ')}`)
+    // Dedup (keep last occurrence) so the list carries info, not repeats.
+    const doneUniq = [...new Set(input.completed)].slice(-12)
+    lines.push('', `ALREADY DONE (do NOT repeat): ${doneUniq.join(' | ')}`)
   }
-  if (input.failed.length) {
-    lines.push('', `RECENTLY FAILED (pick a simpler version or a prerequisite): ${input.failed.slice(-6).join(' | ')}`)
+  if (input.failedDetails.length) {
+    // Dedup by objective, keeping the LATEST critique — so a stuck objective appears ONCE with
+    // its reason ("boiler had no water"), not the same string x6 with no new signal.
+    const latest = new Map<string, string>()
+    for (const f of input.failedDetails) {
+      latest.set(f.objective, f.critique)
+    }
+    const rows = [...latest.entries()].slice(-6).map(([obj, crit]) => `"${obj}" → ${crit}`)
+    lines.push('', 'RECENTLY FAILED (with WHY — FIX the stated cause, or pick a DIFFERENT prerequisite; do NOT re-propose the same objective):', ...rows)
+  }
+  if (input.forbidObjective) {
+    lines.push('', `⛔ FORBIDDEN THIS TURN — this objective has failed repeatedly and is BANNED. Do NOT propose it or any near-rephrasing: "${input.forbidObjective}". Propose something DIFFERENT — a smaller prerequisite, a fix for its failure cause, or the next rung.`)
   }
   lines.push('', 'Propose the next objective as labelled lines (see output format in the system prompt).')
   return lines.join('\n')
