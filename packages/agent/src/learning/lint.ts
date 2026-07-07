@@ -36,11 +36,31 @@ const OPS_CALL = /\bops\.\w+\s*\(/
 const MAP_READ = /\bops\.(?:renderMap|scan|getState)\s*\(/
 const PLACE = /\bops\.placeAt\s*\(/
 
+// Hardcoded MAP COORDINATES — the #1 source of skill pollution. A skill runs on OTHER
+// maps where positions differ, so a literal coord walks/places into empty space. These
+// match ONLY the harmful cases (a numeric LITERAL as a position arg), not legit numeric
+// args like wait(180) / scan(12) / mineEntity('coal', 20):
+//  - walkTo(<number>, ...)                 e.g. walkTo(5, -48)
+//  - placeAt('x', { x: <number>, ... })    e.g. placeAt('iron-chest', { x: 8, y: -50 })
+const HARDCODED_COORD: Array<{ re: RegExp, what: string }> = [
+  { re: /\bops\.walkTo\s*\(\s*-?\d+(?:\.\d+)?\s*,/, what: 'ops.walkTo(<number>, …)' },
+  { re: /\bops\.placeAt\s*\([^)]*\{\s*x\s*:\s*-?\d+(?:\.\d+)?\b/, what: 'ops.placeAt(…, { x: <number>, … })' },
+]
+
 export function lintSkillCode(code: string): LintResult {
   for (const { re, what } of FORBIDDEN) {
     if (re.test(code)) {
       return {
         hardError: `sandbox: ${what} is unavailable. Your ONLY capabilities are the \`ops\` API and standard JS — no network, files, modules, or timers. Use \`await ops.wait(ticks)\` for in-game delays.`,
+        hints: [],
+      }
+    }
+  }
+
+  for (const { re, what } of HARDCODED_COORD) {
+    if (re.test(code)) {
+      return {
+        hardError: `hardcoded coordinate in ${what}. A skill runs on OTHER maps where positions differ, so a literal coordinate walks/places into empty space. Derive positions at runtime instead: \`const t = await ops.findNearest('<resource>'); await ops.walkTo(t.x, t.y)\`, or use a primitive that finds the tile for you (placeDrillOn/placeChestAtDrill/placeFurnaceAtDrill/automateResource/buildSteamPower). Never write a coordinate literal.`,
         hints: [],
       }
     }
