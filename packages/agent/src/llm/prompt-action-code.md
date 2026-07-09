@@ -101,44 +101,34 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.placementSpots(name, near?, radius?, direction?)` → `{spots:[{x,y}]}` — ready, can-place-VERIFIED tiles near a point. Pick one and `placeAt` it.
 - `await ops.placeAt(name, { x, y, direction })` — place ONE entity at an EXACT tile (reaches ~10 tiles; walk close first). Take `{x,y}` from `placementSpots`/`drill_outputs`/`pump_spots` or `scan()` — NEVER by counting the map ruler. On success returns `data:{x,y,status,name}`.
 
-## Worked example — copy this shape (plan → craft → primitive → fuel → verify)
+## Worked example — copy this shape (ensure → one-call primitive → check .ok → verify)
 
 ```js
-async function automateIron(state, ops) {
-  // 1. PLAN the chain off the live game (never from memory).
-  const plan = await ops.craftPlan('stone-furnace', 1)
-  ops.log(`plan raw=${JSON.stringify(plan.raw)}`)
+async function automateIronAndCoal(state, ops) {
+  // 0. ALREADY DONE? Read CURRENT STATE first — never redo a satisfied step.
+  const inv = (await ops.getState()).inventory
+  if ((inv['iron-plate'] || 0) >= 5) { ops.log('already have iron-plate — nothing to do'); return }
 
-  // 2. HOLD a drill + a furnace; craft them if missing (gather their inputs first).
-  for (const item of ['burner-mining-drill', 'stone-furnace']) {
-    if (((await ops.getState()).inventory[item] || 0) >= 1) continue
-    const c = await ops.craftItem(item, 1)
-    if (!c.ok) { ops.log(`craft ${item}: ${c.error} — gather its inputs first`); return }
-  }
+  // 1. AUTOMATE COAL FIRST with the one-call primitive — it fuels everything. It ensures the
+  //    drill + chest itself, finds the patch (findNearest, 400 tiles), seats the drill, adds a
+  //    chest (iron-chest if no wood), and fuels it. Do NOT hand-mine coal.
+  const coal = await ops.automateResource('coal')
+  if (!coal.ok) { ops.log(`coal: ${coal.error}`); return }
 
-  // 3. Reach the iron, then let the MOD seat the drill ON the patch + the furnace on its output.
-  await ops.walkToEntity('iron-ore', 200)
-  const drill = await ops.placeDrillOn('iron-ore')
-  if (!drill.ok) { ops.log(`drill: ${drill.error}`); return }
-  const furnace = await ops.placeFurnaceAtDrill()
-  if (!furnace.ok) { ops.log(`furnace: ${furnace.error}`); return }
+  // 2. AUTOMATE IRON the same way — drill + furnace + fuel in one call.
+  const iron = await ops.automateResource('iron-ore')
+  if (!iron.ok) { ops.log(`iron: ${iron.error}`); return }
 
-  // 4. Fuel both with coal (mine a stock first if you hold none). The drill needs fuel to mine.
-  if (((await ops.getState()).inventory['coal'] || 0) < 10) {
-    await ops.walkToEntity('coal', 200); await ops.mineEntity('coal', 20)
-    await ops.walkToEntity('burner-mining-drill', 200)
-  }
-  await ops.moveItems({ item: 'coal', entity: 'burner-mining-drill', maxCount: 5, toEntity: true })
-  await ops.moveItems({ item: 'coal', entity: 'stone-furnace', maxCount: 5, toEntity: true })
+  // 3. VERIFY via scan; a bad status means SUPPLY input/fuel, never relocate.
   await ops.wait(180)
-
-  // 5. VERIFY via scan; fix a bad status by SUPPLYING input, never relocating.
-  const scan = await ops.scan(12)
-  const d = scan.entities.find(e => e.type === 'mining-drill')
-  const f = scan.entities.find(e => e.type === 'furnace')
-  ops.log(`drill=${d?.status} furnace=${f?.status}`)
+  const scan = await ops.scan(20)
+  for (const d of scan.entities.filter(e => e.type === 'mining-drill')) {
+    ops.log(`drill ${d.mining}: ${d.status}`)
+  }
 }
 ```
+
+**Shape to copy:** read state → `if already satisfied, return` → call the high-level primitive (`automateResource`/`buildSteamPower`/`connectPowerTo`) → `if (!ok) { ops.log(error); return }` → `wait` + `scan` to verify. The BODY only — no `import`/`require`/`process`/`fetch`/timers (the sandbox exposes only `ops`, `state`, `console`). One `async function <name>(state, ops)` as the LAST declaration; helpers above it.
 
 ## Rules
 
