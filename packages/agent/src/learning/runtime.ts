@@ -520,6 +520,18 @@ export function createOps(deps: OpsDeps): Ops {
         ? `automateResource: could not obtain a stone-furnace for '${resource}'`
         : `automateResource: could not obtain a chest for '${resource}' — a wooden-chest needs 2 wood (none on desert maps) and an iron-chest needs 8 iron-plate; collect 8 iron-plate from a furnace first, then retry`
 
+      // FUEL FIRST: guarantee ~10 coal in hand BEFORE placing anything. Burning fuel for a drill
+      // comes from coal; if we run `fuel` AFTER placeDrillOn, its `ensure('coal')` would walk to the
+      // nearest coal — which is the patch UNDER the drill we just placed — and `mineEntity` would
+      // DESTROY that drill (the bug we're fixing). Doing it up front mines a BARE patch (find_nearest
+      // is now drill-aware) and leaves coal in hand so `fuel` short-circuits without hand-mining.
+      if (((await ops.getState()).inventory['coal'] ?? 0) < 10) {
+        const gotCoal = await ops.ensure('coal', 10)
+        if (!gotCoal.ok) {
+          return { ok: false, error: `automateResource: could not bootstrap 10 coal for fuel (a bare coal patch with no drill on it is needed): ${gotCoal.error}` }
+        }
+      }
+
       // REACH the patch first. findNearest searches 400 tiles (vs walkToEntity's 200), so a distant
       // patch (the common coal case — the player wandered off) is still reachable.
       const near = await ops.findNearest(resource)

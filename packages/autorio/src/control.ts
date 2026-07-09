@@ -356,6 +356,26 @@ function get_direction(start_position: MapPositionStruct, end_position: MapPosit
 }
 
 function start_mining(player: LuaPlayer, entity_position: MapPositionStruct) {
+  // Guard: refuse to mine a resource tile that one of the player's own mining-drills already
+  // covers. Without this, update_selected_entity selects the TOPMOST entity on the tile — the
+  // DRILL, not the resource under it — so the player mines and picks up the drill, destroying
+  // the automation, then hand-mines the exposed resource (the observed "agent destroyed its
+  // coal drill to hand-mine coal" bug). Steer the agent to collect the drill's output instead.
+  const drills = player.surface.find_entities_filtered({
+    position: entity_position, radius: 6, type: 'mining-drill', force: player.force,
+  })
+  for (const d of drills) {
+    const bb = d.bounding_box
+    if (
+      entity_position.x >= bb.left_top.x && entity_position.x <= bb.right_bottom.x &&
+      entity_position.y >= bb.left_top.y && entity_position.y <= bb.right_bottom.y
+    ) {
+      const mt = d.mining_target
+      log(`[AUTORIO] [ERROR] a player mining-drill already covers this resource (${mt?.name ?? '?'} @ ${serpent.line(entity_position)}) — collect from its output, don't mine`)
+      task_manager.cancel_all_tasks()
+      return
+    }
+  }
   player.update_selected_entity(entity_position)
   player.mining_state = { mining: true, position: entity_position } // should not use player.mine_entity() because it will skip the mining animation
   log(`[AUTORIO] Started mining at position: ${serpent.line(entity_position)}`)

@@ -1483,7 +1483,27 @@ export function create_tools_remote_interface() {
         }
       }
       else {
+        // Drill-aware: skip resource tiles that one of the player's own mining-drills already
+        // covers. Without this, find_nearest('coal') returns the tile UNDER an existing coal
+        // drill, and the agent then hand-mines there — destroying the drill (see start_mining
+        // guard). The bootstrap must mine a BARE patch (no drill on it).
+        const drill_boxes: BoundingBox[] = []
+        for (const d of surface.find_entities_filtered({ type: 'mining-drill', force: player.force, position: pp, radius: 400 })) {
+          const bb = d.bounding_box
+          drill_boxes.push({ left_top: { x: bb.left_top.x, y: bb.left_top.y }, right_bottom: { x: bb.right_bottom.x, y: bb.right_bottom.y } })
+        }
+        const covered = (px: number, py: number): boolean => {
+          for (const bb of drill_boxes) {
+            if (px >= bb.left_top.x && px <= bb.right_bottom.x && py >= bb.left_top.y && py <= bb.right_bottom.y) {
+              return true
+            }
+          }
+          return false
+        }
         for (const e of surface.find_entities_filtered({ name, position: pp, radius: 400 })) {
+          if (covered(e.position.x, e.position.y)) {
+            continue
+          }
           const dx = e.position.x - pp.x
           const dy = e.position.y - pp.y
           const d = dx * dx + dy * dy
