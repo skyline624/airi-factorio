@@ -193,6 +193,172 @@ function place_connected(surface: LuaSurface, force: LuaForce, player: LuaPlayer
   return undefined
 }
 
+// --- build_chain helpers (layout solver for crafting chains) -------------------
+// Find the nearest entity (furnace / assembler / chest) whose output inventory or
+// chest contents include `item`. Scans within 50 tiles of the player. build_chain
+// uses this to locate an input source.
+function find_source_for_item(surface: LuaSurface, force: LuaForce, player: LuaPlayer, item: string): LuaEntity | undefined {
+  const pp = player.position
+  const types = ['furnace', 'assembling-machine', 'container']
+  let best: LuaEntity | undefined
+  let best_dist = math.huge
+  for (const t of types) {
+    for (const e of surface.find_entities_filtered({ force, type: t, position: pp, radius: 50 })) {
+      let has = false
+      if (e.type === 'container') {
+        const ci = e.get_inventory(defines.inventory.chest)
+        has = ci !== undefined && ci.get_item_count(item) > 0
+      } else {
+        const oi = e.get_output_inventory()
+        has = oi !== undefined && oi.get_item_count(item) > 0
+      }
+      if (has) {
+        const d = (e.position.x - pp.x) ** 2 + (e.position.y - pp.y) ** 2
+        if (d < best_dist) {
+          best_dist = d
+          best = e
+        }
+      }
+    }
+  }
+  return best
+}
+
+// Place an inserter between two SPECIFIC entities (not nearest-by-name). Mirrors
+// place_inserter_between's geometry scoring (pickup inside `from`, drop near `to`)
+// but takes entity refs — essential for build_chain where we must target the
+// JUST-PLACED assembler/belt, not whatever happens to be nearest to the player.
+// Fuels burner inserters with 5 coal if available so the chain isn't dead on arrival.
+function place_inserter_entities(surface: LuaSurface, force: LuaForce, player: LuaPlayer, from: LuaEntity, to: LuaEntity, inserter_name: string): LuaEntity | undefined {
+  const inv = player.get_main_inventory()
+  if (inv === undefined) {
+    return undefined
+  }
+  let use_name = inserter_name
+  if (inv.get_item_count(use_name) === 0) {
+    if (inv.get_item_count('burner-inserter') > 0) {
+      use_name = 'burner-inserter'
+    } else if (inv.get_item_count('inserter') > 0) {
+      use_name = 'inserter'
+    } else {
+      return undefined
+    }
+  }
+  const ddx = to.position.x - from.position.x
+  const ddy = to.position.y - from.position.y
+  const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
+  const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
+  const anchor = { x: from.position.x + ux * 1.5, y: from.position.y + uy * 1.5 }
+  const pos = surface.find_non_colliding_position(use_name, anchor, 2, 0.5)
+  if (pos === undefined) {
+    return undefined
+  }
+  const ent = surface.create_entity({ name: use_name, position: pos, force, raise_built: true, player })
+  if (ent === undefined) {
+    return undefined
+  }
+  const fb = from.bounding_box
+  function inside_from(px: number, py: number): boolean {
+    return px >= fb.left_top.x && px <= fb.right_bottom.x && py >= fb.left_top.y && py <= fb.right_bottom.y
+  }
+  const dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
+  let best_dir = ent.direction
+  let best_score = -1e18
+  for (const d of dirs) {
+    ent.direction = d
+    const pick = ent.pickup_position
+    const drop = ent.drop_position
+    const d_drop = (drop.x - to.position.x) ** 2 + (drop.y - to.position.y) ** 2
+    const score = (inside_from(pick.x, pick.y) ? 1000 : 0) - d_drop
+    if (score > best_score) {
+      best_score = score
+      best_dir = d
+    }
+  }
+  ent.direction = best_dir
+  if (!inside_from(ent.pickup_position.x, ent.pickup_position.y)) {
+    ent.destroy()
+    return undefined
+  }
+  inv.remove({ name: use_name, count: 1 })
+  if (use_name === 'burner-inserter' && inv.get_item_count('coal') > 0) {
+    ent.insert({ name: 'coal', count: math.min(inv.get_item_count('coal'), 5) })
+  }
+  log(`[AUTORIO] place_inserter_entities: ${use_name} from ${from.name} toward ${to.name} at (${pos.x},${pos.y})`)
+  return ent
+}
+
+// Lay an L-shaped belt path (horizontal then vertical) between two tile coords.
+// Extracted from connect_entities (belt branch) so build_chain can route belts
+// without going through the remote interface. Re-orient existing belts, report
+// blocked tiles. Returns { placed, reused, blocked }.
+function lay_belts_lpath(surface: LuaSurface, force: LuaForce, player: LuaPlayer, sx: number, sy: number, ex: number, ey: number, name: string = 'transport-belt'): { placed: number, reused: number, blocked: Array<{ x: number, y: number }> } {
+  const inv = player.get_main_inventory()
+  if (inv === undefined) {
+    return { placed: 0, reused: 0, blocked: [] }
+  }
+  function snap(v: number): number {
+    return math.floor(v) + 0.5
+  }
+  const full_path: Array<{ x: number, y: number }> = [{ x: snap(sx), y: snap(sy) }]
+  let cx = snap(sx)
+  let cy = snap(sy)
+  const tex = snap(ex)
+  const tey = snap(ey)
+  while (cx !== tex) {
+    cx += cx < tex ? 1 : -1
+    full_path.push({ x: cx, y: cy })
+  }
+  while (cy !== tey) {
+    cy += cy < tey ? 1 : -1
+    full_path.push({ x: cx, y: cy })
+  }
+  function belt_dir(ax: number, ay: number, bx: number, by: number): defines.direction {
+    if (bx > ax) {
+      return defines.direction.east
+    }
+    if (bx < ax) {
+      return defines.direction.west
+    }
+    if (by > ay) {
+      return defines.direction.south
+    }
+    return defines.direction.north
+  }
+  let placed = 0
+  let reused = 0
+  const blocked: Array<{ x: number, y: number }> = []
+  for (let i = 0; i < full_path.length; i++) {
+    const tile = full_path[i]
+    const dir = i < full_path.length - 1
+      ? belt_dir(tile.x, tile.y, full_path[i + 1].x, full_path[i + 1].y)
+      : (full_path.length > 1 ? belt_dir(full_path[i - 1].x, full_path[i - 1].y, tile.x, tile.y) : defines.direction.east)
+    const here = surface.find_entities_filtered({ position: tile, radius: 0.1, type: 'transport-belt' })
+    if (here.length > 0) {
+      here[0].direction = dir
+      reused += 1
+      continue
+    }
+    if (inv.get_item_count(name) === 0) {
+      blocked.push(tile)
+      continue
+    }
+    if (!surface.can_place_entity({ name, position: tile, direction: dir, force, build_check_type: defines.build_check_type.manual })) {
+      blocked.push(tile)
+      continue
+    }
+    const ent = surface.create_entity({ name, position: tile, direction: dir, force, raise_built: true, player })
+    if (ent === undefined) {
+      blocked.push(tile)
+      continue
+    }
+    inv.remove({ name, count: 1 })
+    placed += 1
+  }
+  log(`[AUTORIO] lay_belts_lpath: placed=${placed} reused=${reused} blocked=${blocked.length}`)
+  return { placed, reused, blocked }
+}
+
 // Total minable resource amount in a drill's mining area — so the agent can tell a
 // DEPLETED drill (move on) from one that's merely mis-seated/off-patch (re-place it) or
 // fine (leave it). Without this, 'no_minable_resources' alone reads as "broken" and the
@@ -1879,6 +2045,295 @@ export function create_tools_remote_interface() {
       // `powered` = the engine is wired into a network (a pole was placed). Distinct from `ok`
       // (the fluid chain built): the engine can produce steam yet stay not_plugged_in with no pole.
       rcon.print(helpers.table_to_json({ ok: engine !== undefined, powered: pole_placed, pump: pump_info, boiler: boiler_info, engine: engine_info, coal: inserted, pole: pole_placed, note }))
+      return true
+    },
+    // Deterministic ONE-CALL crafting chain. Finds a source producing each input item
+    // (furnace/chest/assembler), places an assembler near it, sets the recipe DIRECTLY on the
+    // placed entity, routes belts + inserters from each source to the assembler, wires a power
+    // pole, verifies a steam-engine is on the network, and optionally adds an output chest. The
+    // LLM can't reliably sequence this multi-step spatial build — so we do it in Lua and let the
+    // ENGINE confirm via entity status. Returns JSON { ok, recipe, assembler, inputs_routed,
+    // output, pole, note } with placed coords + diagnostic.
+    build_chain: (recipe_name: string, inputs: string[], assembler_name: string = 'assembling-machine-1', output_chest: boolean = true) => {
+      const player = get_player()
+      if (player === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no player' }))
+        return false
+      }
+      const surface = player.surface
+      const force = player.force
+      const inv = player.get_main_inventory()
+      if (inv === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no inventory' }))
+        return false
+      }
+
+      // 0) Inventory requirements — explicit shopping list, not a silent dud.
+      const missing: string[] = []
+      if (inv.get_item_count(assembler_name) < 1) {
+        missing.push(`${assembler_name} x1`)
+      }
+      const inserter_need = output_chest ? 3 : 2
+      const inserter_have = inv.get_item_count('burner-inserter') + inv.get_item_count('inserter')
+      if (inserter_have < inserter_need) {
+        missing.push(`inserter x${inserter_need} (burner-inserter or inserter)`)
+      }
+      if (inv.get_item_count('transport-belt') < 2) {
+        missing.push('transport-belt (at least 2)')
+      }
+      let has_pole = false
+      for (const pn of POLE_ITEM_NAMES) {
+        if (inv.get_item_count(pn) > 0) {
+          has_pole = true
+          break
+        }
+      }
+      if (!has_pole) {
+        missing.push('electric pole x1 (small/medium/big/substation)')
+      }
+      if (output_chest) {
+        const chest_have = inv.get_item_count('wooden-chest') + inv.get_item_count('iron-chest') + inv.get_item_count('steel-chest')
+        if (chest_have < 1) {
+          missing.push('chest x1 (wooden-chest or iron-chest)')
+        }
+      }
+      if (missing.length > 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `missing items: ${missing.join(', ')}. Craft/get them first.` }))
+        return false
+      }
+
+      // Validate recipe BEFORE building anything (don't waste items on a doomed build).
+      const recipe = force.recipes[recipe_name]
+      if (recipe === undefined || !recipe.enabled) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `recipe '${recipe_name}' is unknown or not researched yet` }))
+        return false
+      }
+
+      // 1) Find a SOURCE for each input item.
+      const sources: Array<{ item: string, entity: LuaEntity }> = []
+      for (const item of inputs) {
+        const src = find_source_for_item(surface, force, player, item)
+        if (src === undefined) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `no source producing '${item}' — automate the ore for it first (place a drill + furnace, or put '${item}' in a chest nearby)` }))
+          return false
+        }
+        sources.push({ item, entity: src })
+      }
+
+      // 2) Assembler spot: near the first source, placeable, trees cleared.
+      const first_src = sources[0].entity
+      clear_growth_around(surface, first_src.position, 6)
+      let asm_pos = surface.find_non_colliding_position(assembler_name, first_src.position, 8, 1)
+      if (asm_pos === undefined) {
+        const spots = find_placeable_spots(surface, force, assembler_name, first_src.position.x, first_src.position.y, 10, defines.direction.north, 5)
+        if (spots.length > 0) {
+          asm_pos = { x: spots[0].x, y: spots[0].y }
+        }
+      }
+      if (asm_pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no placeable spot for ${assembler_name} near source at (${math.floor(first_src.position.x)},${math.floor(first_src.position.y)}) — clear some space` }))
+        return false
+      }
+      clear_growth_around(surface, asm_pos, 4)
+      const assembler = surface.create_entity({ name: assembler_name, position: asm_pos, force, raise_built: true, player })
+      if (assembler === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `failed to place ${assembler_name} at (${math.floor(asm_pos.x)},${math.floor(asm_pos.y)})` }))
+        return false
+      }
+      inv.remove({ name: assembler_name, count: 1 })
+      push_clear_of(player, surface, assembler)
+
+      // 3) Set recipe DIRECTLY on the placed assembler (NOT via the set_recipe remote, which
+      //    targets the NEAREST machine and could hit a pre-existing one).
+      const cats = assembler.prototype.crafting_categories
+      if (cats !== undefined && cats[recipe.category] !== true) {
+        assembler.destroy()
+        inv.insert({ name: assembler_name, count: 1 })
+        rcon.print(helpers.table_to_json({ ok: false, error: `${assembler_name} can't make recipe '${recipe_name}' (category '${recipe.category}') — use a different assembler type` }))
+        return false
+      }
+      assembler.set_recipe(recipe_name)
+
+      // 4) Route each input: source → inserter → belt → ... → inserter → assembler.
+      //    If source and assembler are adjacent (≤3 manhattan), a single direct inserter.
+      const inputs_routed: Array<{ item: string, belts: { placed: number, blocked: number }, inserters: Array<{ x: number, y: number }> }> = []
+      for (const src of sources) {
+        const src_ent = src.entity
+        const inserters: Array<{ x: number, y: number }> = []
+        const sbb = src_ent.bounding_box
+        const abb = assembler.bounding_box
+        const ddx = assembler.position.x - src_ent.position.x
+        const ddy = assembler.position.y - src_ent.position.y
+        const manhattan = math.abs(ddx) + math.abs(ddy)
+
+        if (manhattan <= 3) {
+          const ins = place_inserter_entities(surface, force, player, src_ent, assembler, 'burner-inserter')
+          if (ins === undefined) {
+            rcon.print(helpers.table_to_json({ ok: false, error: `could not place inserter from ${src_ent.name} to ${assembler_name} for '${src.item}' (adjacent but no free tile?)` }))
+            return false
+          }
+          inserters.push({ x: math.floor(ins.position.x * 10) / 10, y: math.floor(ins.position.y * 10) / 10 })
+          inputs_routed.push({ item: src.item, belts: { placed: 0, blocked: 0 }, inserters })
+          continue
+        }
+
+        // Belt endpoints just outside the source and assembler bounding boxes.
+        let bsx: number, bsy: number, bex: number, bey: number
+        if (math.abs(ddx) >= math.abs(ddy)) {
+          if (ddx >= 0) {
+            bsx = sbb.right_bottom.x + 0.5
+            bex = abb.left_top.x - 0.5
+          } else {
+            bsx = sbb.left_top.x - 0.5
+            bex = abb.right_bottom.x + 0.5
+          }
+          bsy = src_ent.position.y
+          bey = assembler.position.y
+        } else {
+          if (ddy >= 0) {
+            bsy = sbb.right_bottom.y + 0.5
+            bey = abb.left_top.y - 0.5
+          } else {
+            bsy = sbb.left_top.y - 0.5
+            bey = abb.right_bottom.y + 0.5
+          }
+          bsx = src_ent.position.x
+          bex = assembler.position.x
+        }
+
+        const belt_result = lay_belts_lpath(surface, force, player, bsx, bsy, bex, bey, 'transport-belt')
+        if (belt_result.placed + belt_result.reused === 0) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `could not lay any belts from source to assembler for '${src.item}' (all tiles blocked — clear the path)` }))
+          return false
+        }
+
+        // Source-side inserter: source → nearest belt to the belt-start tile.
+        const near_belts_src = surface.find_entities_filtered({ position: src_ent.position, radius: 4, type: 'transport-belt' })
+        let first_belt: LuaEntity | undefined
+        if (near_belts_src.length > 0) {
+          first_belt = near_belts_src[0]
+          let bd = (first_belt.position.x - bsx) ** 2 + (first_belt.position.y - bsy) ** 2
+          for (const b of near_belts_src) {
+            const d = (b.position.x - bsx) ** 2 + (b.position.y - bsy) ** 2
+            if (d < bd) {
+              bd = d
+              first_belt = b
+            }
+          }
+        }
+        if (first_belt !== undefined) {
+          const src_ins = place_inserter_entities(surface, force, player, src_ent, first_belt, 'burner-inserter')
+          if (src_ins !== undefined) {
+            inserters.push({ x: math.floor(src_ins.position.x * 10) / 10, y: math.floor(src_ins.position.y * 10) / 10 })
+          }
+        }
+
+        // Assembler-side inserter: nearest belt to the assembler → assembler.
+        const near_belts_asm = surface.find_entities_filtered({ position: assembler.position, radius: 4, type: 'transport-belt' })
+        let last_belt: LuaEntity | undefined
+        if (near_belts_asm.length > 0) {
+          last_belt = near_belts_asm[0]
+          let bd = (last_belt.position.x - bex) ** 2 + (last_belt.position.y - bey) ** 2
+          for (const b of near_belts_asm) {
+            const d = (b.position.x - bex) ** 2 + (b.position.y - bey) ** 2
+            if (d < bd) {
+              bd = d
+              last_belt = b
+            }
+          }
+        }
+        if (last_belt === undefined) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `belts laid but no transport-belt found near the assembler to feed the inserter for '${src.item}'` }))
+          return false
+        }
+        const asm_ins = place_inserter_entities(surface, force, player, last_belt, assembler, 'burner-inserter')
+        if (asm_ins === undefined) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `could not place inserter from belt to ${assembler_name} for '${src.item}' (no free tile adjacent to the belt?)` }))
+          return false
+        }
+        inserters.push({ x: math.floor(asm_ins.position.x * 10) / 10, y: math.floor(asm_ins.position.y * 10) / 10 })
+        inputs_routed.push({ item: src.item, belts: { placed: belt_result.placed, blocked: belt_result.blocked.length }, inserters })
+      }
+
+      // 5) Power: pole next to the assembler + verify a steam-engine exists in range.
+      let pole_placed = false
+      for (const pole_name of POLE_ITEM_NAMES) {
+        if (inv.get_item_count(pole_name) < 1) {
+          continue
+        }
+        const ppos = surface.find_non_colliding_position(pole_name, assembler.position, 6, 0.5)
+        if (ppos !== undefined) {
+          const pole = surface.create_entity({ name: pole_name, position: ppos, force, raise_built: true, player })
+          if (pole !== undefined) {
+            inv.remove({ name: pole_name, count: 1 })
+            pole_placed = true
+            break
+          }
+        }
+      }
+      if (!pole_placed) {
+        rcon.print(helpers.table_to_json({ ok: false, assembler: { x: math.floor(assembler.position.x * 10) / 10, y: math.floor(assembler.position.y * 10) / 10 }, error: 'no electric pole could be placed near the assembler — clear space and place a pole manually' }))
+        return false
+      }
+      const engines = surface.find_entities_filtered({ position: assembler.position, radius: 30, type: 'generator' })
+      if (engines.length === 0) {
+        rcon.print(helpers.table_to_json({ ok: false, error: 'no steam-engine in range (30 tiles) — build steam power first (build_steam_power)', assembler: { x: math.floor(assembler.position.x * 10) / 10, y: math.floor(assembler.position.y * 10) / 10 } }))
+        return false
+      }
+
+      // 6) Output: inserter from assembler → chest (optional).
+      let output_info: { chest: { x: number, y: number }, inserter: { x: number, y: number } } | undefined
+      if (output_chest) {
+        let chest_name = 'wooden-chest'
+        if (inv.get_item_count('wooden-chest') < 1) {
+          if (inv.get_item_count('iron-chest') > 0) {
+            chest_name = 'iron-chest'
+          } else if (inv.get_item_count('steel-chest') > 0) {
+            chest_name = 'steel-chest'
+          }
+        }
+        const cpos = surface.find_non_colliding_position(chest_name, assembler.position, 4, 0.5)
+        if (cpos !== undefined) {
+          const chest = surface.create_entity({ name: chest_name, position: cpos, force, raise_built: true, player })
+          if (chest !== undefined) {
+            inv.remove({ name: chest_name, count: 1 })
+            const out_ins = place_inserter_entities(surface, force, player, assembler, chest, 'burner-inserter')
+            if (out_ins !== undefined) {
+              output_info = {
+                chest: { x: math.floor(chest.position.x * 10) / 10, y: math.floor(chest.position.y * 10) / 10 },
+                inserter: { x: math.floor(out_ins.position.x * 10) / 10, y: math.floor(out_ins.position.y * 10) / 10 },
+              }
+            }
+          }
+        }
+      }
+
+      // 7) Verify: read the assembler's status and diagnose.
+      const asm_status = status_name(assembler.status)
+      const ok_statuses = ['working', 'normal', 'waiting_for_source_items', 'item_ingredient_shortage', 'full_output']
+      const ok = ok_statuses.indexOf(asm_status) >= 0
+      const note = asm_status === 'working'
+        ? 'chain built and assembler working'
+        : asm_status === 'no_power'
+          ? 'assembler has no power — check that the steam-engine is on the same electric network as the pole'
+          : asm_status === 'not_plugged_in_electric_network'
+            ? 'assembler not plugged in — the pole is not close enough, move it adjacent to the assembler'
+            : asm_status === 'waiting_for_source_items' || asm_status === 'item_ingredient_shortage'
+              ? 'chain built — assembler waiting for input items to arrive on the belt (normal at startup, check again shortly)'
+              : asm_status === 'full_output'
+                ? 'chain built but assembler output is full — add an output chest or empty the assembler'
+                : `assembler status: ${asm_status}`
+
+      log(`[AUTORIO] build_chain(${recipe_name}): ${note}`)
+      rcon.print(helpers.table_to_json({
+        ok: true,
+        recipe: recipe_name,
+        assembler: { x: math.floor(assembler.position.x * 10) / 10, y: math.floor(assembler.position.y * 10) / 10, status: asm_status },
+        inputs_routed,
+        output: output_info,
+        pole: pole_placed,
+        note,
+      }))
       return true
     },
     // Deep, FLE-style detail for the single machine at/nearest a tile (recipe, input/output/fuel
