@@ -34,7 +34,12 @@ You almost never compute tile coordinates. For each build there is a **placement
 4. **Keep each chain COMPACT — co-locate, never relocate.** The primitives already co-locate (furnace ON its drill's output, etc.). NEVER mine or re-place a machine that already exists — fix it in place.
 5. **NEVER hand-mine a resource that a drill already automates.** `mineEntity('<resource>')` on a tile a drill covers DESTROYS the drill (the guard refuses it, and hand-mining there would pick up your own drill). To get a resource a drill produces, **collect from its output chest** — `collectOutput('iron-chest','coal')` or `moveItems({item:'coal',entity:'iron-chest',toEntity:false})` — never `mineEntity`. Hand-mine is ONLY for bootstrapping a resource that has NO drill yet (mine ~10 on a bare patch, then `automateResource`).
 6. **Fuel burners with coal** (`moveItems` coal, `toEntity:true`): a burner-drill AND the furnace it feeds both need coal; fuel the drill first, then `wait(180)` to let smelting happen.
-7. **NEVER place a belt, inserter, or assembling-machine by hand.** Orienting a belt/inserter chain is geometry the LLM gets wrong (wrong facing, no free tile, drop misses the assembler). For an intermediate (gear/circuit/science), call `buildChain(recipe, inputs)` — the solver places the assembler + belts + inserters + chest + power correctly. Hand-placing belts/inserters/assemblers is FORBIDDEN; it always orients wrong and leaves a dead chain.
+7. **NEVER place a belt, inserter, assembling-machine, furnace, or chest by hand (`placeAt`).** Orienting/seating these is geometry the LLM gets wrong (wrong facing, misses the drop tile, no free tile). Use the primitives that seat them correctly:
+   - a furnace on a drill's output → `placeFurnaceAtDrill()` (ONLY behind a smeltable ore)
+   - a chest on a drill's output → `placeChestAtDrill()` (coal/stone)
+   - a drill on a patch → `placeDrillOn(resource)` / or the whole chain via `automateResource(resource)` (which also adds the output + fuels, and REPAIRS a drill missing its furnace/chest — re-run it instead of hand-placing the missing output)
+   - an intermediate's assembler + belts + inserters + chest + power → `buildChain(recipe, inputs)`
+   Hand-placing belts/inserters/assemblers/furnaces/chests with `placeAt` is FORBIDDEN; it always seats/orients wrong and leaves a dead chain.
 
 ## Your eyes — `renderMap` and `scan` (to SEE and VERIFY, not to compute coords)
 
