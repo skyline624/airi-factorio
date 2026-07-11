@@ -568,6 +568,7 @@ function makeMockOps(): Ops {
     collectOutput: ok,
     launchRocket: ok,
     buildSteamPower: async () => ({ ok: true }),
+    buildChain: ok,
     researchTechnology: ok,
     wait: ok,
     attackNearestEnemy: ok,

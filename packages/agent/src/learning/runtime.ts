@@ -20,6 +20,9 @@ export function luaArg(value: unknown): string {
   if (typeof value === 'boolean') {
     return value ? 'true' : 'false'
   }
+  if (Array.isArray(value)) {
+    return `{${value.map(luaArg).join(',')}}`
+  }
   // Order matters: escape backslashes first, then quotes, then literal newlines
   // (a raw \n in a Lua short-string literal is an "unfinished string" parse error).
   const escaped = String(value)
@@ -620,6 +623,14 @@ export function createOps(deps: OpsDeps): Ops {
       bumpOpCount()
       const d = extractLastJsonLine<SteamPowerResult>(await deps.raw(`/c remote.call('autorio_tools','build_steam_power')`))
       return (d && typeof d === 'object' && typeof d.ok === 'boolean') ? d : { ok: false, error: 'build_steam_power failed (no/invalid response)' }
+    },
+    buildChain: async (recipe: string, inputs: string[], assemblerName = 'assembling-machine-1', outputChest = true): Promise<OpResult> => {
+      // One-call factory chain: finds sources producing each input, places an assembler, sets the
+      // recipe, routes belts + inserters from each source, wires power, adds an output chest, and
+      // verifies. The LLM gives ONLY recipe + inputs — never a coordinate, belt, or inserter.
+      bumpOpCount()
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, assembler?: { x: number, y: number, status: string }, note?: string }>(await deps.raw(`/c remote.call('autorio_tools','build_chain',${luaArg(recipe)},${luaArg(inputs)},${luaArg(assemblerName)},${luaArg(outputChest)})`))
+      return (d && d.ok === true) ? { ok: true, data: { assembler: d.assembler, note: d.note } } : { ok: false, error: (d && d.error) ? d.error : 'build_chain failed (no/invalid response)' }
     },
     researchTechnology: technologyName => runOp('research_technology', [technologyName]),
     wait: ticks => runOp('wait', [ticks]),

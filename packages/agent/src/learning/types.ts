@@ -290,6 +290,8 @@ export interface Ops {
   launchRocket: () => Promise<OpResult>
   /** Deterministically build a fluid-aligned steam-power chain in ONE call: places offshore-pump -> boiler -> steam-engine (alignment verified by the game), fuels the boiler with your coal, and wires a pole if you have one. Walk NEAR water first and hold the items (1 offshore-pump, 1 boiler, 1 steam-engine, coal). Use this instead of hand-placing the chain — the fluid faces are a fixed mechanism, not a layout you read off the map. */
   buildSteamPower: () => Promise<SteamPowerResult>
+  /** AUTOMATE an intermediate (gear/circuit/science…) in ONE call: finds a source producing each input item, places an assembler, sets the recipe, routes belts + inserters from each source to the assembler, wires a power pole (needs steam power on the network), adds an output chest, and verifies the assembler's status. Use this for EVERY intermediate — NEVER place belts/inserters/assemblers by hand (the solver does the geometry). e.g. `buildChain('iron-gear-wheel', ['iron-plate'])`, `buildChain('electronic-circuit', ['iron-plate','copper-plate'])`. Returns `{ok, data:{assembler:{x,y,status}, note}}`. */
+  buildChain: (recipe: string, inputs: string[], assemblerName?: string, outputChest?: boolean) => Promise<OpResult>
   researchTechnology: (technologyName: string) => Promise<OpResult>
   wait: (ticks: number) => Promise<OpResult>
   attackNearestEnemy: (searchRadius?: number) => Promise<OpResult>
