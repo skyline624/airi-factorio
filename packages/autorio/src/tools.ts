@@ -248,7 +248,18 @@ function place_inserter_entities(surface: LuaSurface, force: LuaForce, player: L
   const ddy = to.position.y - from.position.y
   const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
   const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
-  const anchor = { x: from.position.x + ux * 1.5, y: from.position.y + uy * 1.5 }
+  // Anchor the inserter 1 tile OUTSIDE `to`'s bounding box on the side facing `from`. A 3x3
+  // assembler's bbox reaches ±1.5 of its centre, so a naive midpoint(belt,assembler) lands ON
+  // the assembler (no free tile). Anchoring just outside `to` leaves the inserter adjacent to
+  // its target; find_non_colliding_position handles parity, and the pickup/drop scoring below
+  // orients it to reach `from` too (inserter pickup reaches ~1 tile).
+  const tb = to.bounding_box
+  let ax: number, ay: number
+  if (ux === 1) { ax = tb.left_top.x - 1; ay = from.position.y }
+  else if (ux === -1) { ax = tb.right_bottom.x + 1; ay = from.position.y }
+  else if (uy === 1) { ax = from.position.x; ay = tb.left_top.y - 1 }
+  else { ax = from.position.x; ay = tb.right_bottom.y + 1 }
+  const anchor = { x: ax, y: ay }
   const pos = surface.find_non_colliding_position(use_name, anchor, 2, 0.5)
   if (pos === undefined) {
     return undefined
@@ -2177,25 +2188,28 @@ export function create_tools_remote_interface() {
           continue
         }
 
-        // Belt endpoints just outside the source and assembler bounding boxes.
+        // Belt endpoints 2 tiles CLEAR of the source and assembler bounding boxes — leave a
+        // 1-tile gap at each end for the inserter that sits 1 tile outside the box. A 3x3
+        // assembler's box reaches ±1.5 of centre, so the belt must stop at ±2.5 (not ±0.5/1.5,
+        // which lands on/under the assembler and leaves no room for the inserter).
         let bsx: number, bsy: number, bex: number, bey: number
         if (math.abs(ddx) >= math.abs(ddy)) {
           if (ddx >= 0) {
-            bsx = sbb.right_bottom.x + 0.5
-            bex = abb.left_top.x - 0.5
+            bsx = sbb.right_bottom.x + 2.5
+            bex = abb.left_top.x - 2.5
           } else {
-            bsx = sbb.left_top.x - 0.5
-            bex = abb.right_bottom.x + 0.5
+            bsx = sbb.left_top.x - 2.5
+            bex = abb.right_bottom.x + 2.5
           }
           bsy = src_ent.position.y
           bey = assembler.position.y
         } else {
           if (ddy >= 0) {
-            bsy = sbb.right_bottom.y + 0.5
-            bey = abb.left_top.y - 0.5
+            bsy = sbb.right_bottom.y + 2.5
+            bey = abb.left_top.y - 2.5
           } else {
-            bsy = sbb.left_top.y - 0.5
-            bey = abb.right_bottom.y + 0.5
+            bsy = sbb.left_top.y - 2.5
+            bey = abb.right_bottom.y + 2.5
           }
           bsx = src_ent.position.x
           bex = assembler.position.x
