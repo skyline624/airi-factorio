@@ -229,12 +229,15 @@ function find_source_for_item(surface: LuaSurface, force: LuaForce, player: LuaP
 // but takes entity refs — essential for build_chain where we must target the
 // JUST-PLACED assembler/belt, not whatever happens to be nearest to the player.
 // Fuels burner inserters with 5 coal if available so the chain isn't dead on arrival.
-function place_inserter_entities(surface: LuaSurface, force: LuaForce, player: LuaPlayer, from: LuaEntity, to: LuaEntity, inserter_name: string): LuaEntity | undefined {
+// Place an inserter at an EXACT anchor position + direction (caller computes the anchor from
+// the source/target bounding boxes so pickup lands on `from` and drop on `to`). Verifies
+// can_place, consumes from inventory, fuels burner inserters. Returns the entity or undefined.
+// The caller then reads ent.pickup_position / ent.drop_position to route belts to/from it.
+function place_inserter_at(surface: LuaSurface, force: LuaForce, player: LuaPlayer, anchor: MapPosition, dir: defines.direction, use_name: string): LuaEntity | undefined {
   const inv = player.get_main_inventory()
   if (inv === undefined) {
     return undefined
   }
-  let use_name = inserter_name
   if (inv.get_item_count(use_name) === 0) {
     if (inv.get_item_count('burner-inserter') > 0) {
       use_name = 'burner-inserter'
@@ -244,59 +247,31 @@ function place_inserter_entities(surface: LuaSurface, force: LuaForce, player: L
       return undefined
     }
   }
-  const ddx = to.position.x - from.position.x
-  const ddy = to.position.y - from.position.y
-  const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
-  const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
-  // Anchor the inserter 1 tile OUTSIDE `to`'s bounding box on the side facing `from`. A 3x3
-  // assembler's bbox reaches ±1.5 of its centre, so a naive midpoint(belt,assembler) lands ON
-  // the assembler (no free tile). Anchoring just outside `to` leaves the inserter adjacent to
-  // its target; find_non_colliding_position handles parity, and the pickup/drop scoring below
-  // orients it to reach `from` too (inserter pickup reaches ~1 tile).
-  const tb = to.bounding_box
-  let ax: number, ay: number
-  if (ux === 1) { ax = tb.left_top.x - 1; ay = from.position.y }
-  else if (ux === -1) { ax = tb.right_bottom.x + 1; ay = from.position.y }
-  else if (uy === 1) { ax = from.position.x; ay = tb.left_top.y - 1 }
-  else { ax = from.position.x; ay = tb.right_bottom.y + 1 }
-  const anchor = { x: ax, y: ay }
-  const pos = surface.find_non_colliding_position(use_name, anchor, 2, 0.5)
+  // Nudge to a free tile near the anchor (the exact anchor can land on ore/parity/another entity;
+  // a 1-tile nudge keeps pickup/drop within reach — and the caller reads the REAL pickup/drop
+  // positions after placing, so the belt adapts to the nudge).
+  const pos = surface.find_non_colliding_position(use_name, anchor, 1, 0.25)
   if (pos === undefined) {
     return undefined
   }
-  const ent = surface.create_entity({ name: use_name, position: pos, force, raise_built: true, player })
+  const ent = surface.create_entity({ name: use_name, position: pos, direction: dir, force, raise_built: true, player })
   if (ent === undefined) {
-    return undefined
-  }
-  const fb = from.bounding_box
-  function inside_from(px: number, py: number): boolean {
-    return px >= fb.left_top.x && px <= fb.right_bottom.x && py >= fb.left_top.y && py <= fb.right_bottom.y
-  }
-  const dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
-  let best_dir = ent.direction
-  let best_score = -1e18
-  for (const d of dirs) {
-    ent.direction = d
-    const pick = ent.pickup_position
-    const drop = ent.drop_position
-    const d_drop = (drop.x - to.position.x) ** 2 + (drop.y - to.position.y) ** 2
-    const score = (inside_from(pick.x, pick.y) ? 1000 : 0) - d_drop
-    if (score > best_score) {
-      best_score = score
-      best_dir = d
-    }
-  }
-  ent.direction = best_dir
-  if (!inside_from(ent.pickup_position.x, ent.pickup_position.y)) {
-    ent.destroy()
     return undefined
   }
   inv.remove({ name: use_name, count: 1 })
   if (use_name === 'burner-inserter' && inv.get_item_count('coal') > 0) {
     ent.insert({ name: 'coal', count: math.min(inv.get_item_count('coal'), 5) })
   }
-  log(`[AUTORIO] place_inserter_entities: ${use_name} from ${from.name} toward ${to.name} at (${pos.x},${pos.y})`)
+  log(`[AUTORIO] place_inserter_at: ${use_name} dir=${dir} @ (${anchor.x},${anchor.y}) pick=${ent.pickup_position.x},${ent.pickup_position.y} drop=${ent.drop_position.x},${ent.drop_position.y}`)
   return ent
+}
+
+// unit vector for a cardinal direction
+function dir_unit(d: defines.direction): { x: number, y: number } {
+  if (d === defines.direction.north) return { x: 0, y: -1 }
+  if (d === defines.direction.east) return { x: 1, y: 0 }
+  if (d === defines.direction.south) return { x: 0, y: 1 }
+  return { x: -1, y: 0 }
 }
 
 // Lay an L-shaped belt path (horizontal then vertical) between two tile coords.
@@ -2134,15 +2109,39 @@ export function create_tools_remote_interface() {
       // 2) Assembler spot: near the first source, placeable, trees cleared.
       const first_src = sources[0].entity
       clear_growth_around(surface, first_src.position, 6)
-      let asm_pos = surface.find_non_colliding_position(assembler_name, first_src.position, 8, 1)
-      if (asm_pos === undefined) {
-        const spots = find_placeable_spots(surface, force, assembler_name, first_src.position.x, first_src.position.y, 10, defines.direction.north, 5)
-        if (spots.length > 0) {
-          asm_pos = { x: spots[0].x, y: spots[0].y }
+      // Place the assembler ~7 tiles from the source centre — far enough that the BBOX gap
+      // (source_edge → assembler_edge) is ~4 tiles: 2 for a belt + 1 tile each for the two
+      // inserters (source→belt, belt→assembler). At 5 tiles the 3x3 assembler and 2x2 furnace
+      // end up with only a 3-tile bbox gap → the belt stops flush against the assembler and
+      // there's no free tile for the inserter → a dead chain.
+      let asm_pos: MapPosition | undefined
+      const sx = first_src.position.x
+      const sy = first_src.position.y
+      const offsets: Array<{ x: number, y: number }> = [
+        { x: sx + 7, y: sy }, { x: sx - 7, y: sy }, { x: sx, y: sy + 7 }, { x: sx, y: sy - 7 },
+        { x: sx + 7, y: sy + 5 }, { x: sx - 7, y: sy + 5 }, { x: sx + 7, y: sy - 5 }, { x: sx - 7, y: sy - 5 },
+      ]
+      for (const off of offsets) {
+        const p = surface.find_non_colliding_position(assembler_name, off, 2, 1)
+        if (p !== undefined) {
+          const d = math.abs(p.x - sx) + math.abs(p.y - sy)
+          if (d >= 6) {
+            asm_pos = p
+            break
+          }
         }
       }
       if (asm_pos === undefined) {
-        rcon.print(helpers.table_to_json({ ok: false, error: `no placeable spot for ${assembler_name} near source at (${math.floor(first_src.position.x)},${math.floor(first_src.position.y)}) — clear some space` }))
+        const spots = find_placeable_spots(surface, force, assembler_name, sx, sy, 14, defines.direction.north, 7)
+        for (const sp of spots) {
+          if (math.abs(sp.x - sx) + math.abs(sp.y - sy) >= 6) {
+            asm_pos = { x: sp.x, y: sp.y }
+            break
+          }
+        }
+      }
+      if (asm_pos === undefined) {
+        rcon.print(helpers.table_to_json({ ok: false, error: `no placeable spot for ${assembler_name} at >=4 tiles from source at (${math.floor(sx)},${math.floor(sy)}) — clear some space` }))
         return false
       }
       clear_growth_around(surface, asm_pos, 4)
@@ -2171,101 +2170,59 @@ export function create_tools_remote_interface() {
       for (const src of sources) {
         const src_ent = src.entity
         const inserters: Array<{ x: number, y: number }> = []
-        const sbb = src_ent.bounding_box
-        const abb = assembler.bounding_box
         const ddx = assembler.position.x - src_ent.position.x
         const ddy = assembler.position.y - src_ent.position.y
-        const manhattan = math.abs(ddx) + math.abs(ddy)
 
-        if (manhattan <= 3) {
-          const ins = place_inserter_entities(surface, force, player, src_ent, assembler, 'burner-inserter')
-          if (ins === undefined) {
-            rcon.print(helpers.table_to_json({ ok: false, error: `could not place inserter from ${src_ent.name} to ${assembler_name} for '${src.item}' (adjacent but no free tile?)` }))
-            return false
-          }
-          inserters.push({ x: math.floor(ins.position.x * 10) / 10, y: math.floor(ins.position.y * 10) / 10 })
-          inputs_routed.push({ item: src.item, belts: { placed: 0, blocked: 0 }, inserters })
-          continue
-        }
-
-        // Belt endpoints 2 tiles CLEAR of the source and assembler bounding boxes — leave a
-        // 1-tile gap at each end for the inserter that sits 1 tile outside the box. A 3x3
-        // assembler's box reaches ±1.5 of centre, so the belt must stop at ±2.5 (not ±0.5/1.5,
-        // which lands on/under the assembler and leaves no room for the inserter).
-        let bsx: number, bsy: number, bex: number, bey: number
-        if (math.abs(ddx) >= math.abs(ddy)) {
-          if (ddx >= 0) {
-            bsx = sbb.right_bottom.x + 2.5
-            bex = abb.left_top.x - 2.5
-          } else {
-            bsx = sbb.left_top.x - 2.5
-            bex = abb.right_bottom.x + 2.5
-          }
-          bsy = src_ent.position.y
-          bey = assembler.position.y
-        } else {
-          if (ddy >= 0) {
-            bsy = sbb.right_bottom.y + 2.5
-            bey = abb.left_top.y - 2.5
-          } else {
-            bsy = sbb.left_top.y - 2.5
-            bey = abb.right_bottom.y + 2.5
-          }
-          bsx = src_ent.position.x
-          bex = assembler.position.x
-        }
-
-        const belt_result = lay_belts_lpath(surface, force, player, bsx, bsy, bex, bey, 'transport-belt')
-        if (belt_result.placed + belt_result.reused === 0) {
-          rcon.print(helpers.table_to_json({ ok: false, error: `could not lay any belts from source to assembler for '${src.item}' (all tiles blocked — clear the path)` }))
+        // Belt endpoints: 2 tiles from the source centre and 2 tiles from the assembler centre,
+        // along the dominant axis. This is the EXACT geometry place_inserter_entities expects:
+        // an inserter at `from + unit` has pickup on `from` and drop at `from + 2*unit`, so the
+        // belt (the inserter's `from`) must sit 2 tiles from the assembler centre for the drop to
+        // land on the assembler. Anchoring on bounding-box edges (±2.5) left the belt 2.5 from the
+        // box but ~4 from a 3x3 centre → the inserter's drop missed the assembler.
+        const ux = math.abs(ddx) >= math.abs(ddy) ? (ddx >= 0 ? 1 : -1) : 0
+        const uy = ux === 0 ? (ddy >= 0 ? 1 : -1) : 0
+        // Inserter `direction` = direction of PICKUP (Factorio convention), not the drop. The flux
+        // runs source→assembler (east here), so pickup is toward the source (west) and drop toward
+        // the assembler (east) → direction = OPPOSITE of the flux direction.
+        const d: defines.direction = ux === 1 ? defines.direction.west : ux === -1 ? defines.direction.east : uy === 1 ? defines.direction.north : defines.direction.south
+        // INSERTERS FIRST (exact anchors from bounding boxes), then the belt connects them.
+        // Source-side inserter: anchor = source.position + (s_half+1)*unit → pickup lands on the
+        //   source's box edge (inside), drop at source + (s_half+2)*unit (free tile, belt start).
+        // Asm-side inserter: anchor = assembler.position - (a_half+1)*unit → drop on the assembler's
+        //   box edge (inside), pickup at assembler - (a_half+2)*unit (free tile, belt end).
+        // Then belt from src_ins.drop_position to asm_ins.pickup_position — the belt ends EXACTLY
+        // where each inserter reaches, no bex to snap-guess (the snap was landing the belt 0.5 too
+        // close and the inserter overlapped the assembler).
+        const sbb = src_ent.bounding_box
+        const s_half_x = (sbb.right_bottom.x - sbb.left_top.x) / 2
+        const s_half_y = (sbb.right_bottom.y - sbb.left_top.y) / 2
+        const src_anchor = { x: src_ent.position.x + ux * (s_half_x + 1), y: src_ent.position.y + uy * (s_half_y + 1) }
+        const src_ins = place_inserter_at(surface, force, player, src_anchor, d, 'burner-inserter')
+        if (src_ins === undefined) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `could not place the source-side inserter for '${src.item}' (no free tile at ${src_anchor.x},${src_anchor.y} — clear space beside the source)` }))
           return false
         }
+        inserters.push({ x: math.floor(src_ins.position.x * 10) / 10, y: math.floor(src_ins.position.y * 10) / 10 })
+        const drop_pos = src_ins.drop_position
 
-        // Source-side inserter: source → nearest belt to the belt-start tile.
-        const near_belts_src = surface.find_entities_filtered({ position: src_ent.position, radius: 4, type: 'transport-belt' })
-        let first_belt: LuaEntity | undefined
-        if (near_belts_src.length > 0) {
-          first_belt = near_belts_src[0]
-          let bd = (first_belt.position.x - bsx) ** 2 + (first_belt.position.y - bsy) ** 2
-          for (const b of near_belts_src) {
-            const d = (b.position.x - bsx) ** 2 + (b.position.y - bsy) ** 2
-            if (d < bd) {
-              bd = d
-              first_belt = b
-            }
-          }
-        }
-        if (first_belt !== undefined) {
-          const src_ins = place_inserter_entities(surface, force, player, src_ent, first_belt, 'burner-inserter')
-          if (src_ins !== undefined) {
-            inserters.push({ x: math.floor(src_ins.position.x * 10) / 10, y: math.floor(src_ins.position.y * 10) / 10 })
-          }
-        }
-
-        // Assembler-side inserter: nearest belt to the assembler → assembler.
-        const near_belts_asm = surface.find_entities_filtered({ position: assembler.position, radius: 4, type: 'transport-belt' })
-        let last_belt: LuaEntity | undefined
-        if (near_belts_asm.length > 0) {
-          last_belt = near_belts_asm[0]
-          let bd = (last_belt.position.x - bex) ** 2 + (last_belt.position.y - bey) ** 2
-          for (const b of near_belts_asm) {
-            const d = (b.position.x - bex) ** 2 + (b.position.y - bey) ** 2
-            if (d < bd) {
-              bd = d
-              last_belt = b
-            }
-          }
-        }
-        if (last_belt === undefined) {
-          rcon.print(helpers.table_to_json({ ok: false, error: `belts laid but no transport-belt found near the assembler to feed the inserter for '${src.item}'` }))
-          return false
-        }
-        const asm_ins = place_inserter_entities(surface, force, player, last_belt, assembler, 'burner-inserter')
+        const abb = assembler.bounding_box
+        const a_half_x = (abb.right_bottom.x - abb.left_top.x) / 2
+        const a_half_y = (abb.right_bottom.y - abb.left_top.y) / 2
+        const asm_anchor = { x: assembler.position.x - ux * (a_half_x + 1), y: assembler.position.y - uy * (a_half_y + 1) }
+        const asm_ins = place_inserter_at(surface, force, player, asm_anchor, d, 'burner-inserter')
         if (asm_ins === undefined) {
-          rcon.print(helpers.table_to_json({ ok: false, error: `could not place inserter from belt to ${assembler_name} for '${src.item}' (no free tile adjacent to the belt?)` }))
+          rcon.print(helpers.table_to_json({ ok: false, error: `could not place the assembler-side inserter for '${src.item}' (no free tile at ${asm_anchor.x},${asm_anchor.y} — clear space beside the assembler)` }))
           return false
         }
         inserters.push({ x: math.floor(asm_ins.position.x * 10) / 10, y: math.floor(asm_ins.position.y * 10) / 10 })
+        const pick_pos = asm_ins.pickup_position
+
+        // Belt from the source-side inserter's DROP tile to the assembler-side inserter's PICKUP tile.
+        const belt_result = lay_belts_lpath(surface, force, player, drop_pos.x, drop_pos.y, pick_pos.x, pick_pos.y, 'transport-belt')
+        if (belt_result.placed + belt_result.reused === 0) {
+          rcon.print(helpers.table_to_json({ ok: false, error: `could not lay belts from source to assembler for '${src.item}' (all tiles blocked — clear the path)` }))
+          return false
+        }
         inputs_routed.push({ item: src.item, belts: { placed: belt_result.placed, blocked: belt_result.blocked.length }, inserters })
       }
 
@@ -2306,19 +2263,40 @@ export function create_tools_remote_interface() {
             chest_name = 'steel-chest'
           }
         }
-        const cpos = surface.find_non_colliding_position(chest_name, assembler.position, 4, 0.5)
-        if (cpos !== undefined) {
-          const chest = surface.create_entity({ name: chest_name, position: cpos, force, raise_built: true, player })
-          if (chest !== undefined) {
-            inv.remove({ name: chest_name, count: 1 })
-            const out_ins = place_inserter_entities(surface, force, player, assembler, chest, 'burner-inserter')
-            if (out_ins !== undefined) {
-              output_info = {
-                chest: { x: math.floor(chest.position.x * 10) / 10, y: math.floor(chest.position.y * 10) / 10 },
-                inserter: { x: math.floor(out_ins.position.x * 10) / 10, y: math.floor(out_ins.position.y * 10) / 10 },
-              }
-            }
+        // Output inserter on a free side of the assembler (try all 4), then chest at its drop tile.
+        const oabb = assembler.bounding_box
+        const o_half_x = (oabb.right_bottom.x - oabb.left_top.x) / 2
+        const o_half_y = (oabb.right_bottom.y - oabb.left_top.y) / 2
+        const out_dirs = [defines.direction.north, defines.direction.east, defines.direction.south, defines.direction.west]
+        for (const d_out of out_dirs) {
+          const uo = dir_unit(d_out)
+          const out_anchor = { x: assembler.position.x + uo.x * (o_half_x + 1), y: assembler.position.y + uo.y * (o_half_y + 1) }
+          // d_out is the flux direction (toward the chest); inserter direction = PICKUP direction
+          // = opposite of flux (pickup on the assembler, drop on the chest).
+          const d_pickup = d_out === defines.direction.east ? defines.direction.west : d_out === defines.direction.west ? defines.direction.east : d_out === defines.direction.north ? defines.direction.south : defines.direction.north
+          const out_ins = place_inserter_at(surface, force, player, out_anchor, d_pickup, 'burner-inserter')
+          if (out_ins === undefined) {
+            continue
           }
+          const drop = out_ins.drop_position
+          const cpos = surface.find_non_colliding_position(chest_name, drop, 2, 0.5)
+          if (cpos === undefined) {
+            out_ins.destroy()
+            inv.insert({ name: 'burner-inserter', count: 1 })
+            continue
+          }
+          const chest = surface.create_entity({ name: chest_name, position: cpos, force, raise_built: true, player })
+          if (chest === undefined) {
+            out_ins.destroy()
+            inv.insert({ name: 'burner-inserter', count: 1 })
+            continue
+          }
+          inv.remove({ name: chest_name, count: 1 })
+          output_info = {
+            chest: { x: math.floor(chest.position.x * 10) / 10, y: math.floor(chest.position.y * 10) / 10 },
+            inserter: { x: math.floor(out_ins.position.x * 10) / 10, y: math.floor(out_ins.position.y * 10) / 10 },
+          }
+          break
         }
       }
 
