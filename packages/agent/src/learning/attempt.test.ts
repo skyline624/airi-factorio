@@ -109,6 +109,23 @@ describe('attemptObjective', () => {
     expect(second?.prevCode).toBe(CODE)
   })
 
+  it('feeds the previous attempt\'s ops.log output back to the retry (so it fixes the named cause, not blind)', async () => {
+    // The skill logs the game's exact error + its own diagnostic, then fails the critic. The
+    // NEXT attempt must receive those logs as `lastLogs` — the missing-ingredient / smelt-timing /
+    // no-fuel walls all surface here, and the fix is to surface them (not re-run blind).
+    const inputs: GenerateCodeInput[] = []
+    const loggedCode = 'async function f(state, ops) { ops.log("furnace status: no_fuel"); ops.log("smelted 2 plates, need 5"); await ops.wait(1) }'
+    const generateCode = async (input: GenerateCodeInput) => {
+      inputs.push(input)
+      return { code: loggedCode, raw: '' }
+    }
+    let n = 0
+    const verify = async (): Promise<Verdict> => (++n >= 2 ? { success: true, critique: '' } : { success: false, critique: 'need 5 plates' })
+    const r = await attemptObjective('smelt 5 iron-plate', '', { ...base, generateCode, verify, maxRetries: 2 })
+    expect(r.attempts).toBe(2)
+    expect(inputs[1]?.lastLogs).toEqual(['furnace status: no_fuel', 'smelted 2 plates, need 5'])
+  })
+
   it('reuses the post-run scan as the next attempt local map (skips the retry pre-scan)', async () => {
     const captureScan = vi.fn(async () => ({ entities: [{ name: 'stone-furnace', type: 'furnace', x: 0, y: 0, direction: 'north', status: 'no_fuel' }], resources: {} }))
     const localMaps: Array<string | null | undefined> = []

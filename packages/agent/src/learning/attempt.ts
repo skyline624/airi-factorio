@@ -86,6 +86,7 @@ export async function attemptObjective(objective: string, context: string, deps:
   let prevCode: string | null = null
   let lastError: string | null = null
   let lastCritique: string | null = null
+  let lastLogs: string[] | null = null
   let lastHints: string[] | null = null
   // The post-run machine status (entities + status) the critic just judged. Reused as the
   // next attempt's local map so the model sees EXACTLY the critic's evidence (and we skip a scan).
@@ -121,6 +122,7 @@ export async function attemptObjective(objective: string, context: string, deps:
       prevCode,
       lastError,
       lastCritique,
+      lastLogs,
       hints: lastHints,
       progress: attempt === 1 ? null : diffState(before, current),
       localMap,
@@ -143,6 +145,7 @@ export async function attemptObjective(objective: string, context: string, deps:
       prevCode = code
       lastError = lint.hardError
       lastCritique = null
+      lastLogs = null
       lastHints = null
       deps.log?.(`  -> static check rejected the code (no run): ${lint.hardError}`)
       continue
@@ -197,6 +200,10 @@ export async function attemptObjective(objective: string, context: string, deps:
     prevCode = code
     lastError = result.ok ? null : (result.error ?? null)
     lastCritique = verdict.critique
+    // Feed the skill's own log output (the game's exact per-op errors + the agent's ops.log
+    // diagnostics) back to the next attempt — so it fixes the named cause instead of repeating
+    // blind (the missing-ingredient, smelt-timing, out-of-reach, no-fuel walls all surface here).
+    lastLogs = logs.length ? logs : null
     // Surface the static smells (blind placement / missing await) to the next attempt.
     lastHints = lint.hints.length ? lint.hints : null
     // Feed this run's post-run machine status forward as the next attempt's local map.

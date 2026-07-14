@@ -19,6 +19,10 @@ export interface GenerateCodeInput {
   prevCode?: string | null
   lastError?: string | null
   lastCritique?: string | null
+  /** What the previous attempt LOGGED (its `ops.log` output: the game's exact per-op errors + the
+   *  agent's own diagnostics). Fed back so the next attempt fixes the named cause instead of
+   *  repeating blind — the Voyager execution-error loop, extended to the mod's per-op errors. */
+  lastLogs?: string[] | null
   /** Static-analysis smells about the previous attempt (blind placement, missing await). */
   hints?: string[] | null
   /** What has already been achieved toward the objective (banked across retries). */
@@ -138,6 +142,14 @@ function buildUserMessage(input: GenerateCodeInput): string {
     lines.push('', 'YOUR PREVIOUS ATTEMPT FAILED — fix it:', '```js', input.prevCode, '```')
     if (input.lastError) {
       lines.push(`EXECUTION ERROR: ${input.lastError}`)
+    }
+    if (input.lastLogs && input.lastLogs.length) {
+      // The game's EXACT per-op errors + the agent's own ops.log land here. Capped to the last
+      // ~20 lines so a verbose scan dump can't crowd out the actionable error lines.
+      lines.push('LAST ATTEMPT\'S LOGS (the game\'s EXACT errors + your own ops.log) — READ them and fix the named cause; do NOT repeat the same code:')
+      for (const ln of input.lastLogs.slice(-20)) {
+        lines.push(`  ${ln}`)
+      }
     }
     if (input.lastCritique) {
       lines.push(`VERIFIER FEEDBACK: ${input.lastCritique}`)
