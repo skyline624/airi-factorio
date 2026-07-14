@@ -18,6 +18,8 @@ export interface CurriculumInput {
   completed: string[]
   /** Recently-failed objectives WITH their critique (why they failed), so the curriculum can fix the cause or pick a different prerequisite instead of re-proposing the same string. */
   failedDetails: { objective: string, critique: string }[]
+  /** EXACT recipe diagnosis for recently-failed crafts (from the game's recipe graph via getRecipe): the real recipe + which ingredient the player is short of. Lets the curriculum propose the right prerequisite instead of guessing (e.g. "missing 1 stone-furnace" → propose crafting a furnace, not "more gears"). */
+  failedRecipeDiagnosis?: string[]
   /** Objectives that failed repeatedly — the curriculum MUST NOT re-propose any of them (loop breaker). */
   forbidObjectives?: string[]
   model: string
@@ -145,6 +147,12 @@ function buildMessage(input: CurriculumInput): string {
     }
     const rows = [...latest.entries()].slice(-6).map(([obj, crit]) => `"${obj}" → ${crit}`)
     lines.push('', 'RECENTLY FAILED (with WHY — FIX the stated cause, or pick a DIFFERENT prerequisite; do NOT re-propose the same objective):', ...rows)
+  }
+  if (input.failedRecipeDiagnosis && input.failedRecipeDiagnosis.length) {
+    lines.push('', 'EXACT RECIPE DIAGNOSIS for recently-failed crafts (read from the GAME\'s recipe graph — do NOT guess): the MISSING item below IS your next objective. Acquire it first (craft if craftable, smelt in a furnace if it\'s a plate, mine if it\'s ore), THEN retry the failed craft.')
+    for (const d of input.failedRecipeDiagnosis) {
+      lines.push(`- ${d}`)
+    }
   }
   if (input.forbidObjectives && input.forbidObjectives.length) {
     lines.push('', '⛔ FORBIDDEN — these objectives have FAILED repeatedly and are BANNED. Do NOT propose any of them or a near-rephrasing. Propose something DIFFERENT — a smaller prerequisite, a fix for the failure cause, or a DIFFERENT rung:')

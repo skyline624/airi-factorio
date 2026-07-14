@@ -81,6 +81,8 @@ export interface ScanEntity {
   mining?: string
   /** mining drills only: total ore left in the drill's mining area. 0 = depleted (move on); a high number with status 'no_minable_resources' = the drill is mis-seated/off-patch, re-place it rather than rebuild. */
   oreUnder?: number
+  /** crafting machines only (assembler/furnace/rocket-silo): the posed recipe, or 'none' (a crafting machine with no recipe set does nothing). Lets you read "who produces what" in one scan without an N×getEntity round-trip. */
+  recipe?: string
 }
 
 /**
@@ -107,12 +109,14 @@ export interface EntityDetail {
   pickup?: { x: number, y: number }
   /** inserter or mining-drill: the drop tile (drill = where ore lands; put a furnace/belt/chest there). */
   drop?: { x: number, y: number }
+  /** transport belts only: the input tile (items enter) + output tile (items leave), derived from the belt's facing, and the items on each lane (left/right). Lets you read what a belt carries and chain "the output of belt A feeds the input of belt B". */
+  belt?: { input: { x: number, y: number }, output: { x: number, y: number }, left: { name: string, count: number }[], right: { name: string, count: number }[] }
   /** mining drills only: the resource actually mined, or 'nothing'. */
   mining?: string
   /** mining drills only: ore left in the mining area (0 = depleted). */
   oreUnder?: number
-  /** fluid handlers (boiler/engine/pump/refinery/chemical-plant/pipe): each fluidbox's per-connection link state. `linked:false` = the fluid hookup did NOT take → reroute the pipe. */
-  fluids?: { index: number, connections: { flow: string, linked: boolean }[] }[]
+  /** fluid handlers (boiler/engine/pump/refinery/chemical-plant/pipe): each fluidbox's held fluid + per-connection link state. `linked:false` = the fluid hookup did NOT take → reroute the pipe. `fluid:undefined` = the box is empty (e.g. an empty intake with status no_input_fluid). */
+  fluids?: { index: number, fluid?: { name: string, amount: number }, connections: { flow: string, linked: boolean }[] }[]
   /** present when status is an item-ingredient shortage — exactly which item is short and by how much. */
   missingIngredients?: string[]
 }

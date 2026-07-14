@@ -137,6 +137,13 @@ describe('createOps', () => {
     expect(res.resources['iron-ore']?.count).toBe(842)
   })
 
+  it('scan surfaces the posed recipe for crafting machines', async () => {
+    const out = '{"origin":{"x":0,"y":0},"radius":32,"entities":[{"name":"assembling-machine-1","type":"assembling-machine","x":10,"y":4,"direction":"north","status":"working","recipe":"iron-gear-wheel"}],"resources":{}}'
+    const ops = createOps({ raw: async () => out, settleBus: createSettleBus(1000) })
+    const res = await ops.scan(32)
+    expect(res.entities[0]?.recipe).toBe('iron-gear-wheel')
+  })
+
   it('getEntity parses rich machine detail (recipe/missingIngredients) and dispatches floored coords', async () => {
     const raw = vi.fn(async () => '{"name":"assembling-machine-1","type":"assembling-machine","x":10,"y":4,"direction":"north","status":"item_ingredient_shortage","recipe":"iron-gear-wheel","input":[{"name":"iron-plate","count":1}],"missingIngredients":["iron-plate (have 1/2)"]}')
     const ops = createOps({ raw, settleBus: createSettleBus(1000) })
@@ -149,6 +156,37 @@ describe('createOps', () => {
   it('getEntity returns null when there is no machine at the tile', async () => {
     const ops = createOps({ raw: async () => '{}', settleBus: createSettleBus(1000) })
     await expect(ops.getEntity({ x: 0, y: 0 })).resolves.toBeNull()
+  })
+
+  it('getEntity surfaces fluidbox held fluid (name+amount) and per-connection link state', async () => {
+    const raw = vi.fn(async () => '{"name":"boiler","type":"boiler","x":3,"y":7,"direction":"north","status":"working","fluids":[{"index":1,"fluid":{"name":"water","amount":95},"connections":[{"flow":"input-output","linked":true}]},{"index":2,"fluid":{"name":"steam","amount":40},"connections":[{"flow":"output","linked":true}]}]}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const d = await ops.getEntity({ x: 3.2, y: 7.9 })
+    expect(d?.fluids).toHaveLength(2)
+    expect(d?.fluids?.[0]?.fluid).toEqual({ name: 'water', amount: 95 })
+    expect(d?.fluids?.[0]?.connections?.[0]).toEqual({ flow: 'input-output', linked: true })
+    expect(d?.fluids?.[1]?.fluid).toEqual({ name: 'steam', amount: 40 })
+  })
+
+  it('getEntity surfaces an empty fluidbox as fluid:undefined while still listing its connections', async () => {
+    // The mod emits fluid:undefined for an empty box; Lua nil → the JSON key is omitted, so the
+    // agent sees `fluid` as undefined (not null).
+    const raw = vi.fn(async () => '{"name":"oil-refinery","type":"assembling-machine","x":12,"y":-3,"direction":"north","status":"no_input_fluid","fluids":[{"index":1,"connections":[{"flow":"input","linked":false}]}]}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const d = await ops.getEntity({ x: 12, y: -3 })
+    expect(d?.fluids?.[0]?.fluid).toBeUndefined()
+    expect(d?.fluids?.[0]?.connections?.[0]).toEqual({ flow: 'input', linked: false })
+  })
+
+  it('getEntity surfaces belt input/output tiles + lane contents', async () => {
+    // A belt facing east: items move +x, so input (back) is the west tile, output (front) east.
+    const raw = vi.fn(async () => '{"name":"transport-belt","type":"transport-belt","x":20,"y":5,"direction":"east","status":"working","belt":{"input":{"x":19,"y":5},"output":{"x":21,"y":5},"left":[{"name":"iron-plate","count":3}],"right":[]}}')
+    const ops = createOps({ raw, settleBus: createSettleBus(1000) })
+    const d = await ops.getEntity({ x: 20.5, y: 5.5 })
+    expect(d?.belt?.input).toEqual({ x: 19, y: 5 })
+    expect(d?.belt?.output).toEqual({ x: 21, y: 5 })
+    expect(d?.belt?.left).toEqual([{ name: 'iron-plate', count: 3 }])
+    expect(d?.belt?.right).toEqual([])
   })
 
   it('launchRocket dispatches launch_rocket and resolves ok on a successful launch', async () => {

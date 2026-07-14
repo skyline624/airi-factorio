@@ -323,6 +323,16 @@ remote.add_interface('autorio_operations', {
     log_player_info(player_id)
     return true
   },
+  // Toggle headless test mode. When true, character-based ops (walk/mine/craft/attack) are
+  // SIMULATED without a player character (a disconnected player has no `player.character`),
+  // so the full agent loop can run headless to validate improvements. The agent sends this
+  // on boot: set_test_mode(true) for HEADLESS_TEST_MODE, set_test_mode(false) otherwise (so a
+  // value persisted in a save can't leak into a real play session). Returns the new value.
+  set_test_mode: (v: boolean) => {
+    storage.test_mode = v === true
+    log(`[AUTORIO] test_mode = ${storage.test_mode}`)
+    return storage.test_mode
+  },
 })
 
 // Map a human-friendly direction string (from the LLM) to a defines.direction.
@@ -1531,6 +1541,156 @@ function update_perception(player: LuaPlayer) {
   perception.last_enemy_count = count
 }
 
+// Headless test-mode simulator. Character-based ops (walk/mine/craft/attack) run WITHOUT a
+// player character — a disconnected player has no `player.character`, so the real handlers
+// (which use `walking_state`/`mining_state`/`shooting_state`/craft queue) can't progress. Here
+// we execute the SAME task semantics by character-free means: walk = teleport, mine =
+// `entity.mine({inventory})` (the entity really leaves the world, the item really enters the
+// inventory), craft = insert product + consume ingredients. The agent loop is otherwise
+// unchanged — the same remote ops are called, the same `[AUTORIO] All operations completed`
+// flows (next_task prints it after reset). Returns true when it handled the current task_state
+// (so on_tick stops); false to let the real handler run for place/move/research/wait (those
+// need no character — the on_tick guard was the only thing blocking them).
+function run_test_mode_step(player: LuaPlayer): boolean {
+  const state = storage.player_state.task_state
+  const surface = player.surface
+  const inv = player.get_main_inventory()
+
+  if (state === TaskStates.WALKING_TO_ENTITY) {
+    const p = storage.player_state.parameters_walk_to_entity
+    if (p === undefined) {
+      task_manager.reset_task_state(); task_manager.next_task(); return true
+    }
+    let goal: MapPositionStruct | null | undefined = p.final_goal ?? p.goal_position ?? p.target_position
+    if (goal === undefined || goal === null) {
+      // No staged target yet (pathfinding never ran) — resolve the nearest matching entity.
+      const filter = prototypes.entity[p.entity_name] !== undefined
+        ? { position: player.position, radius: p.search_radius, name: p.entity_name }
+        : { position: player.position, radius: p.search_radius, type: p.entity_name }
+      const found = surface.find_entities_filtered(filter)
+      goal = found.length > 0 ? (get_nearest_entity(player, found)?.position ?? null) : null
+    }
+    if (goal !== null && goal !== undefined) {
+      const pos = surface.find_non_colliding_position('character', goal, 8, 0.5) ?? goal
+      player.teleport(pos)
+      log(`[AUTORIO] [test_mode] walked (teleport) to ${serpent.line(pos)}`)
+    }
+    else {
+      log(`[AUTORIO] [ERROR] [test_mode] no ${p.entity_name} within ${p.search_radius} to walk to`)
+    }
+    task_manager.reset_task_state(); task_manager.next_task()
+    return true
+  }
+
+  if (state === TaskStates.WALKING_DIRECT) {
+    const p = storage.player_state.parameters_walking_direct
+    if (p === undefined || p.target_position === null) {
+      task_manager.reset_task_state(); task_manager.next_task(); return true
+    }
+    const pos = surface.find_non_colliding_position('character', p.target_position, 8, 0.5) ?? p.target_position
+    player.teleport(pos)
+    log(`[AUTORIO] [test_mode] walked-direct (teleport) to ${serpent.line(pos)}`)
+    task_manager.reset_task_state(); task_manager.next_task()
+    return true
+  }
+
+  if (state === TaskStates.MINING) {
+    const p = storage.player_state.parameters_mine_entity
+    if (p === undefined || inv === undefined) {
+      task_manager.reset_task_state(); task_manager.next_task(); return true
+    }
+    const mine_name = p.entity_name
+    const target = math.max(1, p.count)
+    let mined = 0
+    let guard_abort = false
+    try {
+      for (let i = 0; i < target; i++) {
+        if (p.count > 0 && inv.get_item_count(mine_name) >= p.count) break
+        const filter = prototypes.entity[mine_name] !== undefined
+          ? { position: player.position, radius: 5, name: mine_name }
+          : { position: player.position, radius: 5, type: mine_name }
+        const found = surface.find_entities_filtered(filter)
+        if (found.length === 0) break
+        const e = get_nearest_entity(player, found)
+        if (e === undefined || e === null) break
+        // Anti-drill guard (mirror start_mining): don't mine a resource a player drill covers.
+        let covered = false
+        for (const d of surface.find_entities_filtered({ position: e.position, radius: 6, type: 'mining-drill', force: player.force })) {
+          const bb = d.bounding_box
+          if (e.position.x >= bb.left_top.x && e.position.x <= bb.right_bottom.x && e.position.y >= bb.left_top.y && e.position.y <= bb.right_bottom.y) {
+            covered = true; break
+          }
+        }
+        if (covered) { guard_abort = true; break }
+        // mine() only accepts a script inventory or a basic entity inventory — a disconnected
+        // player's main inventory is neither, so mine into a transient script inventory and
+        // transfer its contents to the player's main inventory (the real "mined into hand").
+        const tmp = game.create_inventory(50)
+        const ok = e.mine({ inventory: tmp, force: true, raise_destroyed: true })
+        if (ok && inv !== undefined) {
+          for (const it of tmp.get_contents()) {
+            inv.insert(it)
+          }
+        }
+        tmp.destroy()
+        if (!ok) {
+          log(`[AUTORIO] [test_mode] mine failed on ${mine_name}`); break
+        }
+        mined += 1
+      }
+    }
+    catch {
+      log(`[AUTORIO] [ERROR] [test_mode] '${mine_name}' is not a valid entity name/type to mine`)
+    }
+    if (guard_abort) {
+      log(`[AUTORIO] [ERROR] [test_mode] a player mining-drill covers '${mine_name}' — collect from its output, don't mine`)
+      task_manager.cancel_all_tasks()
+    }
+    else {
+      log(`[AUTORIO] [test_mode] mined ${mined} ${mine_name} (now holds ${inv.get_item_count(mine_name)})`)
+      task_manager.reset_task_state(); task_manager.next_task()
+    }
+    return true
+  }
+
+  if (state === TaskStates.CRAFTING) {
+    const p = storage.player_state.parameters_craft_item
+    if (p === undefined || inv === undefined) {
+      task_manager.reset_task_state(); task_manager.next_task(); return true
+    }
+    const recipe = player.force.recipes[p.item_name]
+    if (recipe === undefined) {
+      log(`[AUTORIO] [ERROR] [test_mode] no recipe for '${p.item_name}'`)
+      task_manager.reset_task_state(); task_manager.next_task(); return true
+    }
+    // Scale by the per-craft yield of the requested product, then consume item ingredients
+    // (skip fluids) and insert the product — faithful to real crafting.
+    let per = 1
+    for (const prod of recipe.products) {
+      if (prod.name === p.item_name && prod.amount !== undefined && prod.amount > 0) per = prod.amount
+    }
+    const crafts = math.max(1, math.ceil(p.count / per))
+    for (const ing of recipe.ingredients) {
+      if (ing.type !== 'fluid') {
+        inv.remove({ name: ing.name, count: ing.amount * crafts })
+      }
+    }
+    inv.insert({ name: p.item_name, count: per * crafts })
+    log(`[AUTORIO] [test_mode] crafted ${per * crafts} ${p.item_name} (crafts=${crafts})`)
+    task_manager.reset_task_state(); task_manager.next_task()
+    return true
+  }
+
+  if (state === TaskStates.ATTACKING) {
+    // Enemies are removed at setup; real attack needs a character to shoot — just advance.
+    log('[AUTORIO] [test_mode] attack simulated (skipped)')
+    task_manager.reset_task_state(); task_manager.next_task()
+    return true
+  }
+
+  return false // place/move/research/wait: let the real handler run (no character needed)
+}
+
 let no_player_found = false
 
 script.on_event(defines.events.on_tick, (unused_event) => {
@@ -1542,7 +1702,7 @@ script.on_event(defines.events.on_tick, (unused_event) => {
   }
 
   const player = get_player()
-  if (player === undefined || player.character === undefined) {
+  if (player === undefined) {
     if (!no_player_found) {
       log('[AUTORIO] No valid player found')
       no_player_found = true
@@ -1550,10 +1710,31 @@ script.on_event(defines.events.on_tick, (unused_event) => {
     return
   }
 
-  update_perception(player)
-
-  if (storage.player_state.task_state === TaskStates.IDLE) {
-    return
+  // Headless test mode: simulate character-based ops (walk/mine/craft/attack) without a
+  // character; place/move/research/wait fall through to the real handlers (no character
+  // needed — the guard below was the only blocker). Skip update_perception (character-based
+  // survival alerts, irrelevant to the test loop).
+  if (storage.test_mode) {
+    if (storage.player_state.task_state === TaskStates.IDLE) {
+      return
+    }
+    if (run_test_mode_step(player)) {
+      return
+    }
+    // else: a non-simulated state — fall through to the shared dispatch below.
+  }
+  else {
+    if (player.character === undefined) {
+      if (!no_player_found) {
+        log('[AUTORIO] No valid player found')
+        no_player_found = true
+      }
+      return
+    }
+    update_perception(player)
+    if (storage.player_state.task_state === TaskStates.IDLE) {
+      return
+    }
   }
 
   if (storage.player_state.task_state === TaskStates.WALKING_TO_ENTITY) {

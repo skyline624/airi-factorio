@@ -43,7 +43,7 @@ You almost never compute tile coordinates. For each build there is a **placement
 
 ## Your eyes — `renderMap` and `scan` (to SEE and VERIFY, not to compute coords)
 
-- `await ops.scan(radius?)` → `{ entities:[{name,type,x,y,direction,status}], resources:{name:{count,x,y}} }`. This is how you read each machine's **status** to verify a build.
+- `await ops.scan(radius?)` → `{ entities:[{name,type,x,y,direction,status,mining?,oreUnder?,recipe?}], resources:{name:{count,x,y}} }`. This is how you read each machine's **status** to verify a build. Crafting machines (assembler/furnace/rocket-silo) carry their posed `recipe` (or `'none'` if no recipe set) — so one scan tells you **who produces what** without an N×getEntity round-trip.
 - `await ops.renderMap(radius?, center?)` → an ASCII grid (`.`=ground `~`=water `#`=cliff `i/c/k/s`=ore `D`=drill `F`=furnace `X`=a drill's output tile `@`=you, etc.) for a quick visual of layout/free space. Coordinates are printed in the border. Use it to SEE adjacency and confirm a build — not to hand-compute placement tiles (the primitives do that).
 
 ## VERIFY then FIX
@@ -55,7 +55,7 @@ After building + fueling, `await ops.scan()` and check EACH machine's `status`. 
 - `full_output` → drain its output (`moveItems` `toEntity:false`, or a belt/chest).
 - `no_minable_resources` / `n/a` on a drill → genuinely misplaced → mine it back and `placeDrillOn(<resource>)` again.
 
-When a status is confusing (e.g. an assembler stuck `item_ingredient_shortage`, or a fluid machine `no_input_fluid`), call `await ops.getEntity({x: e.x, y: e.y})` on that scan entity to see its `missingIngredients` / `fluids` link state and fix the exact cause.
+When a status is confusing (e.g. an assembler stuck `item_ingredient_shortage`, or a fluid machine `no_input_fluid`), call `await ops.getEntity({x: e.x, y: e.y})` on that scan entity to see its `missingIngredients`, its `fluids` (each box's held `fluid:{name,amount}` + per-connection `linked` state — `linked:false` = the pipe didn't connect, `fluid` absent = the box is empty), and — for a `transport-belt` — its `belt` (the `input`/`output` tiles derived from its facing + the `left`/`right` lane contents), and fix the exact cause.
 
 Don't end the function while a machine you built is not `working` (or fixes are exhausted). `ops.log(...)` the statuses you saw (the verifier reads these).
 
@@ -79,7 +79,7 @@ Every action returns `{ ok: boolean, error?: string }`. ALWAYS `await` and check
 - `await ops.getState()` → `{ inventory, entities, position, health, currentResearch }`.
 - `await ops.craftPlan(item, count?)` → `{ raw, steps:[{name,amount,category,enabled}], locked }`. The WHOLE chain, leaves-first. Call FIRST for any build/craft.
 - `await ops.getRecipe(name)` / `await ops.describeEntity(name)` / `await ops.techFor(item)` / `await ops.usedIn(item)` — exact recipe / entity mechanics / what to research / what consumes it.
-- `await ops.getEntity({x,y})` → deep detail for the ONE machine at a tile: posed `recipe`, `input`/`output`/`fuel` contents, `fluids` link state (`linked:false` = pipe didn't connect), `missingIngredients`. Call this to DIAGNOSE a machine whose `scan` status isn't `working` (it tells you exactly what it's short of / not connected). Null if no machine there.
+- `await ops.getEntity({x,y})` → deep detail for the ONE machine at a tile: posed `recipe`, `input`/`output`/`fuel` contents, `fluids` (each box's held `fluid:{name,amount}` + per-connection `linked` state; `linked:false` = pipe didn't connect, `fluid` absent = box empty), `missingIngredients`, and for an inserter its `pickup`/`drop` tiles, for a drill its `drop`/`mining`/`oreUnder`, for a `transport-belt` its `belt:{input,output,left,right}` (the input/output tiles derived from its facing + each lane's items). Call this to DIAGNOSE a machine whose `scan` status isn't `working` (it tells you exactly what it's short of / not connected). Null if no machine there.
 - `await ops.findNearest(name)` → `{name,x,y,distance}` for ore/coal/**water** far beyond the map.
 - `await ops.productionStats()` → `{produced, consumed}` cumulative counters (proof of real output).
 

@@ -52,7 +52,7 @@ function check(name: string, ok: boolean, detail = ''): void {
   }
 }
 
-interface ScanEntity { name: string, type: string, x: number, y: number, status: string, mining?: string }
+interface ScanEntity { name: string, type: string, x: number, y: number, status: string, mining?: string, recipe?: string }
 interface Scan { entities: ScanEntity[] }
 
 /** Wipe the force's machines + dropped items near spawn and reset player 1's inventory. */
@@ -82,6 +82,74 @@ async function createDrillOnIron(): Promise<{ x: number, y: number }> {
   )
   const [x, y] = out.split(',').map(Number)
   return { x, y }
+}
+
+// ---- P0.2 tests: rich entity returns (fluid content, belt I/O, scan recipe) ----
+
+interface FluidEntry { index: number, fluid?: { name: string, amount: number }, connections: Array<{ flow: string, linked: boolean }> }
+interface EntityDetailOut { name: string, type: string, fluids?: FluidEntry[], belt?: { input: { x: number, y: number }, output: { x: number, y: number }, left: Array<{ name: string, count: number }>, right: Array<{ name: string, count: number }> } }
+
+async function testScanRecipe(): Promise<void> {
+  console.log('scan_factory recipe field (P0.2)')
+  await resetSandbox({})
+  // An assembler WITH a recipe and one WITHOUT — scan_factory must surface both, and drills
+  // (non-crafting) must omit the recipe field entirely.
+  await lua(
+    `local p=game.get_player(1); local s=p.surface; local pp=p.position; `
+    + `local a1=s.create_entity{name='assembling-machine-1',position={pp.x+2,pp.y},force=p.force}; `
+    + `if a1 then a1.set_recipe('iron-gear-wheel') end; `
+    + `local a2=s.create_entity{name='assembling-machine-1',position={pp.x+5,pp.y},force=p.force}; `
+    + `rcon.print('setup')`,
+  )
+  const s = await scan()
+  const asm = s.entities.filter(e => e.name === 'assembling-machine-1')
+  const withRecipe = asm.find(e => e.recipe === 'iron-gear-wheel')
+  const noRecipe = asm.find(e => e.recipe === 'none')
+  check('scan surfaces the posed recipe on a crafting machine', !!withRecipe, `recipes=${asm.map(e => e.recipe).join('|')}`)
+  check('scan surfaces "none" for a crafting machine with no recipe set', !!noRecipe)
+  check('scan omits recipe on non-crafting entities (drills)', s.entities.filter(e => e.type === 'mining-drill').every(e => e.recipe === undefined))
+}
+
+async function testGetEntityFluids(): Promise<void> {
+  console.log('get_entity fluidbox content (P0.2)')
+  await resetSandbox({})
+  // A storage-tank with water injected into its fluidbox, and an empty one. storage-tank has a
+  // single fluidbox that holds any fluid with no neighbour needed — ideal to verify the new
+  // `fluid:{name,amount}` field (and the empty-box case where the key is absent).
+  const setup = await lua(
+    `local p=game.get_player(1); local s=p.surface; local pp=p.position; `
+    + `local t1=s.create_entity{name='storage-tank',position={pp.x+2,pp.y},force=p.force}; `
+    + `if t1 then t1.fluidbox[1]={name='water',amount=2500} end; `
+    + `local t2=s.create_entity{name='storage-tank',position={pp.x+5,pp.y},force=p.force}; `
+    + `rcon.print(t1.position.x..','..t1.position.y..'|'..t2.position.x..','..t2.position.y)`,
+  )
+  const [p1, p2] = setup.split('|')
+  const [x1, y1] = p1.split(',').map(Number)
+  const [x2, y2] = p2.split(',').map(Number)
+  const full = await tool<EntityDetailOut>('get_entity', `${x1},${y1}`)
+  check('get_entity surfaces the held fluid (name+amount>0)', full?.fluids?.[0]?.fluid?.name === 'water' && (full?.fluids?.[0]?.fluid?.amount ?? 0) > 0, JSON.stringify(full?.fluids?.[0]))
+  const empty = await tool<EntityDetailOut>('get_entity', `${x2},${y2}`)
+  check('get_entity surfaces an empty fluidbox as fluid:undefined (key absent)', empty?.fluids?.[0] !== undefined && empty?.fluids?.[0]?.fluid === undefined, JSON.stringify(empty?.fluids?.[0]))
+}
+
+async function testGetEntityBelt(): Promise<void> {
+  console.log('get_entity belt input/output + lanes (P0.2)')
+  await resetSandbox({})
+  // An east-facing belt with 3 iron-plates inserted on its left lane. The mod derives input
+  // (back) / output (front) from the facing, and reads each lane's contents.
+  const setup = await lua(
+    `local p=game.get_player(1); local s=p.surface; local pp=p.position; `
+    + `local b=s.create_entity{name='transport-belt',position={pp.x+2,pp.y},force=p.force,direction=defines.direction.east}; `
+    + `if b then b.get_transport_line(1).insert_at_back({name='iron-plate',count=3}) end; `
+    + `rcon.print(b.position.x..','..b.position.y)`,
+  )
+  const [bx, by] = setup.split(',').map(Number)
+  const d = await tool<EntityDetailOut>('get_entity', `${bx},${by}`)
+  check('belt surfaces input/output tiles', !!d?.belt?.input && !!d?.belt?.output, JSON.stringify(d?.belt))
+  // East-facing: items move +x, so the output (front) is east of the input (back).
+  check('belt output is east of input (facing east)', d?.belt?.output?.x !== undefined && d?.belt?.input?.x !== undefined && d.belt.output.x > d.belt.input.x, `in=${JSON.stringify(d?.belt?.input)} out=${JSON.stringify(d?.belt?.output)}`)
+  check('belt left lane carries the inserted items', d?.belt?.left?.some(i => i.name === 'iron-plate') === true, JSON.stringify(d?.belt?.left))
+  check('belt right lane is empty', (d?.belt?.right?.length ?? 0) === 0, JSON.stringify(d?.belt?.right))
 }
 
 // ---- Tests -----------------------------------------------------------------
@@ -130,6 +198,9 @@ async function main(): Promise<void> {
   await testPlayerHeadless()
   await testRenderMap()
   await testStatusMapping()
+  await testScanRecipe()
+  await testGetEntityFluids()
+  await testGetEntityBelt()
   // tidy the sandbox so a following agent run starts clean
   await resetSandbox({})
   client.close()

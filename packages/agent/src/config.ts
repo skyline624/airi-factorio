@@ -64,6 +64,7 @@ export const learningConfig: LearningConfig = {
   maxRetries: 4,
   deterministicCritic: true,
   gameDataCache: true,
+  headlessTestMode: false,
 }
 
 export function initEnv() {
@@ -136,6 +137,10 @@ export function initEnv() {
   // Cache static game-data lookups (recipe/entity/craft-plan) per session to cut redundant
   // RCON round-trips. Defaults on; set LEARNING_GAME_DATA_CACHE=false to disable.
   learningConfig.gameDataCache = (env.LEARNING_GAME_DATA_CACHE || 'true').trim().toLowerCase() !== 'false'
+  // Headless test mode: run the full learning loop WITHOUT a connected Factorio client — the
+  // mod simulates character-based ops (walk/mine/craft/attack) so improvements can be validated
+  // without real movement/mining. Skips `waitForPlayer` and sends `set_test_mode` on boot.
+  learningConfig.headlessTestMode = (env.HEADLESS_TEST_MODE || 'false').trim().toLowerCase() === 'true'
 
   logger.withFields({ openaiConfig, factorioConfig, debugConfig, airiConfig, autonomousConfig, learningConfig }).log('Environment variables initialized')
 }

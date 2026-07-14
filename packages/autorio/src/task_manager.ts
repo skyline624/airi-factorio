@@ -29,6 +29,9 @@ export function init_storage(): void {
       last_structure_alert_tick: 0,
     }
   }
+  if (s.test_mode === undefined) {
+    storage.test_mode = false
+  }
 }
 
 export function new_task_manager() {
@@ -99,10 +102,14 @@ export function new_task_manager() {
           return
         }
 
-        player.begin_crafting({
-          count: task.count,
-          recipe: task.item_name,
-        })
+        // In headless test mode the crafting queue wouldn't progress without a character, so
+        // don't queue a real craft — run_test_mode_step (on_tick) inserts the product directly.
+        if (!storage.test_mode) {
+          player.begin_crafting({
+            count: task.count,
+            recipe: task.item_name,
+          })
+        }
 
         storage.player_state.parameters_craft_item = task
         break

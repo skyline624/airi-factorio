@@ -165,4 +165,10 @@ export interface AutorioStorage {
   task_queue: PlayerParameters[]
   setup_complete: boolean
   perception: PerceptionState
+  // Headless test mode: when true, character-based ops (walk/mine/craft/attack) are SIMULATED
+  // without a player character (a disconnected player has no `player.character`), so the full
+  // agent loop can run headless to validate improvements. Set via the `set_test_mode` remote.
+  // Production runs leave this false (the agent always sends set_test_mode(false) on a normal
+  // boot, so a value persisted in a save can't leak into a real play session).
+  test_mode: boolean
 }

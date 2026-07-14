@@ -70,6 +70,28 @@ export function status_name(status: number | undefined): string {
       return 'no_minable_resources'
     case defines.entity_status.disabled_by_script:
       return 'disabled_by_script'
+    // A crafting machine with no recipe set — it does nothing until you setRecipe it.
+    case defines.entity_status.no_recipe:
+      return 'no_recipe'
+    // A drill/inserter whose target is a ghost not yet built — distinct from no_minable_resources
+    // (whole area empty). Build the target, not the machine.
+    case defines.entity_status.waiting_for_target_to_be_built:
+      return 'waiting_for_target_to_be_built'
+    // A rocket-silo loading/readying a rocket — normal mid-launch, not an error.
+    case defines.entity_status.preparing_rocket_for_launch:
+      return 'preparing_rocket_for_launch'
+    // A rocket-silo/launcher waiting for its rocket to be ready to launch — normal mid-cycle.
+    case defines.entity_status.waiting_to_launch_rocket:
+      return 'waiting_to_launch_rocket'
+    // A rail-signal not connected to any rail (future rung) — build/connect the rail.
+    case defines.entity_status.not_connected_to_rail:
+      return 'not_connected_to_rail'
+    // A beacon with no modules installed — transmit nothing until you load it.
+    case defines.entity_status.no_modules_to_transmit:
+      return 'no_modules_to_transmit'
+    // The entity is flagged for deconstruction (a ghost will replace it) — not a malfunction.
+    case defines.entity_status.marked_for_deconstruction:
+      return 'marked_for_deconstruction'
     default:
       return 'other'
   }
@@ -360,6 +382,24 @@ function drill_ore_under(surface: LuaSurface, drill: LuaEntity): number {
   return math.floor(total)
 }
 
+// Whether `e` is a crafting machine that holds a posed recipe. chemical-plant and oil-refinery
+// have entity TYPE 'assembling-machine' (only their prototype name differs), so this covers them
+// too. Shared by entity_detail, scan_area and scan_factory so the crafting-type set lives once.
+function is_crafting_machine(e: LuaEntity): boolean {
+  return e.type === 'assembling-machine' || e.type === 'furnace' || e.type === 'rocket-silo'
+}
+
+// The posed recipe of a crafting machine, or undefined (non-crafting entity, or no recipe set).
+// get_recipe() multi-returns (recipe, quality) — we keep only the recipe. Single source of truth
+// for the unpacking convention, reused by entity_detail (name + missingIngredients) and scan.
+function recipe_of(e: LuaEntity): LuaRecipe | undefined {
+  if (!is_crafting_machine(e)) {
+    return undefined
+  }
+  const [recipe] = e.get_recipe()
+  return recipe
+}
+
 // Deep, FLE-style detail for ONE entity, so the agent can DIAGNOSE a machine that isn't
 // 'working' (posed recipe, input/output/fuel contents, inserter/drill geometry, fluid link
 // state, which ingredient is short). Heavier than a scan_area row — fetched on demand per
@@ -375,12 +415,10 @@ function entity_detail(surface: LuaSurface, e: LuaEntity): Record<string, unknow
   }
 
   // chemical-plant and oil-refinery have entity TYPE 'assembling-machine' (only their prototype
-  // name differs), so 'assembling-machine' already covers them. get_recipe() multi-returns
-  // (recipe, quality) — we only want the recipe.
-  const is_crafting = e.type === 'assembling-machine' || e.type === 'furnace' || e.type === 'rocket-silo'
-  let recipe: LuaRecipe | undefined
-  if (is_crafting) {
-    ;[recipe] = e.get_recipe()
+  // name differs), so is_crafting_machine covers them. recipe_of() unpacks get_recipe()'s
+  // (recipe, quality) multi-return.
+  const recipe = recipe_of(e)
+  if (is_crafting_machine(e)) {
     rec.recipe = recipe !== undefined ? recipe.name : 'none'
   }
 
@@ -415,6 +453,27 @@ function entity_detail(surface: LuaSurface, e: LuaEntity): Record<string, unknow
     rec.drop = { x: math.floor(e.drop_position.x * 10) / 10, y: math.floor(e.drop_position.y * 10) / 10 }
   }
 
+  // Transport belt: the input/output tiles (items enter `input`, leave `output` — derived from
+  // the belt's facing, since the engine exposes no native E/S positions) + the items on each
+  // lane (left=1, right=2, 1-based). Lets the agent read what a belt carries and chain "the
+  // output of belt A feeds the input of belt B" without hand-counting the ASCII map.
+  if (e.type === 'transport-belt') {
+    const u = dir_unit(e.direction)
+    const lane_items = (i: number): Array<{ name: string, count: number }> => {
+      if (i > e.get_max_transport_line_index()) {
+        return []
+      }
+      const line = e.get_transport_line(i)
+      return line.get_contents().map(c => ({ name: c.name, count: c.count }))
+    }
+    rec.belt = {
+      input: { x: math.floor((e.position.x - u.x) * 10) / 10, y: math.floor((e.position.y - u.y) * 10) / 10 },
+      output: { x: math.floor((e.position.x + u.x) * 10) / 10, y: math.floor((e.position.y + u.y) * 10) / 10 },
+      left: lane_items(1),
+      right: lane_items(2),
+    }
+  }
+
   // Drill: the drop tile (where ore lands) + what it's actually mining.
   if (e.type === 'mining-drill') {
     rec.drop = { x: math.floor(e.drop_position.x * 10) / 10, y: math.floor(e.drop_position.y * 10) / 10 }
@@ -423,20 +482,23 @@ function entity_detail(surface: LuaSurface, e: LuaEntity): Record<string, unknow
     rec.oreUnder = drill_ore_under(surface, e)
   }
 
-  // Fluidbox: per-connection link state (boilers/engines/pumps/refineries/chemical-plants/pipes).
-  // `linked:false` = the fluid hookup did NOT take (reroute the pipe). Contents (which fluid /
-  // how much) are intentionally omitted for now — the status (e.g. no_input_fluid) + link state
-  // already diagnose the main fluid failure, and reading box contents needs the index convention
-  // confirmed live first.
+  // Fluidbox: per-connection link state (boilers/engines/pumps/refineries/chemical-plants/pipes)
+  // + the fluid actually held in each box (name + amount). `linked:false` = the fluid hookup did
+  // NOT take (reroute the pipe). `fluid:undefined` = the box is empty (status like no_input_fluid
+  // + an empty intake diagnoses a missing/broken pipe without guessing). fluidbox indexing is
+  // 1-based in the Factorio API. NOTE: tstl shifts `[]` index access by +1 (0-based TS → 1-based
+  // Lua), so `fb[i - 1]` compiles to `fb[i]` — the correct 1-based read. `get_pipe_connections(i)`
+  // is a method call (not index access) so it takes the raw 1-based `i` unchanged.
   const fb = e.fluidbox
   if (fb.length > 0) {
-    const fluids: Array<{ index: number, connections: Array<{ flow: string, linked: boolean }> }> = []
+    const fluids: Array<{ index: number, fluid?: { name: string, amount: number }, connections: Array<{ flow: string, linked: boolean }> }> = []
     for (let i = 1; i <= fb.length; i++) {
+      const f = fb[i - 1]
       const conns: Array<{ flow: string, linked: boolean }> = []
       for (const c of fb.get_pipe_connections(i)) {
         conns.push({ flow: c.flow_direction, linked: c.target !== undefined })
       }
-      fluids.push({ index: i, connections: conns })
+      fluids.push({ index: i, fluid: f !== undefined ? { name: f.name, amount: f.amount } : undefined, connections: conns })
     }
     rec.fluids = fluids
   }
@@ -1360,7 +1422,7 @@ export function create_tools_remote_interface() {
       const r = math.min(radius > 0 ? radius : 32, 128)
       const surface = player.surface
 
-      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number }[] = []
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number, recipe?: string }[] = []
       let n = 0
       for (const e of surface.find_entities_filtered({ position: player.position, radius: r })) {
         if (e.name === 'character') {
@@ -1370,7 +1432,7 @@ export function create_tools_remote_interface() {
           break
         }
         n += 1
-        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number } = {
+        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number, recipe?: string } = {
           name: e.name,
           type: e.type,
           x: math.floor(e.position.x * 10) / 10,
@@ -1382,6 +1444,13 @@ export function create_tools_remote_interface() {
           const mt = e.mining_target
           rec.mining = mt !== undefined ? mt.name : 'nothing'
           rec.oreUnder = drill_ore_under(surface, e)
+        }
+        // The posed recipe for a crafting machine — lets the agent see "who produces what" in a
+        // single scan without an N×getEntity round-trip. 'none' = a crafting machine with no
+        // recipe set (it does nothing until you setRecipe it).
+        if (is_crafting_machine(e)) {
+          const recipe = recipe_of(e)
+          rec.recipe = recipe !== undefined ? recipe.name : 'none'
         }
         entities.push(rec)
       }
@@ -1413,14 +1482,14 @@ export function create_tools_remote_interface() {
       }
       const surface = player.surface
       const producer_types = ['mining-drill', 'furnace', 'assembling-machine', 'lab', 'boiler', 'generator', 'pumpjack', 'chemical-plant', 'oil-refinery', 'rocket-silo']
-      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number }[] = []
+      const entities: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number, recipe?: string }[] = []
       let n = 0
       for (const e of surface.find_entities_filtered({ force: player.force, type: producer_types })) {
         if (n >= 100) {
           break
         }
         n += 1
-        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number } = {
+        const rec: { name: string, type: string, x: number, y: number, direction: string, status: string, mining?: string, oreUnder?: number, recipe?: string } = {
           name: e.name,
           type: e.type,
           x: math.floor(e.position.x * 10) / 10,
@@ -1434,6 +1503,12 @@ export function create_tools_remote_interface() {
           const mt = e.mining_target
           rec.mining = mt !== undefined ? mt.name : 'nothing'
           rec.oreUnder = drill_ore_under(surface, e)
+        }
+        // The posed recipe for a crafting machine — the critic judges "is the factory producing?"
+        // from the recipe each machine runs, in one surface-wide scan.
+        if (is_crafting_machine(e)) {
+          const recipe = recipe_of(e)
+          rec.recipe = recipe !== undefined ? recipe.name : 'none'
         }
         entities.push(rec)
       }

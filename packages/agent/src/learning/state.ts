@@ -108,6 +108,41 @@ export async function captureState(raw: (input: string) => Promise<string>, play
   return parseGameState(await raw(buildCaptureStateCommand(playerName ?? '')))
 }
 
+/**
+ * Look up the EXACT recipe for `item` from the game's recipe graph (via the `describe` remote) and
+ * compute which ingredients the player is short of, so the curriculum can propose the right
+ * prerequisite instead of guessing. Observed failure this fixes: "craft burner-mining-drill" failed
+ * (the mod rejected it: "missing 1 stone-furnace"), but the curriculum only saw "hold 0" and GUESSED
+ * "craft more gears" — wasting 5 objectives. With the exact diagnosis it proposes "craft a
+ * stone-furnace" immediately.
+ *
+ * Returns null when `item` has no recipe (a raw resource like iron-ore) OR the recipe is already
+ * satisfied (the failure was something else) — so the curriculum only gets a diagnosis when it's
+ * actionable.
+ */
+export async function diagnoseCraftFailure(item: string, state: GameState, raw: (input: string) => Promise<string>): Promise<string | null> {
+  const safe = item.replace(/'/g, "\\'")
+  const d = extractLastJsonLine<{ recipe?: { ingredients?: Array<{ name: string, amount: number }>, enabled?: boolean } }>(await raw(`/c remote.call('autorio_tools','describe','${safe}')`))
+  const ingredients = d?.recipe?.ingredients
+  if (!ingredients || ingredients.length === 0) {
+    return null
+  }
+  const inv = state.inventory ?? {}
+  const missing: string[] = []
+  const held: string[] = []
+  for (const ing of ingredients) {
+    const have = inv[ing.name] ?? 0
+    held.push(`${ing.name} ${have}/${ing.amount}`)
+    if (have < ing.amount) {
+      missing.push(`${ing.name} (have ${have}/${ing.amount})`)
+    }
+  }
+  if (missing.length === 0) {
+    return null // recipe satisfied — the failure wasn't a missing ingredient
+  }
+  return `EXACT recipe for '${item}': ${ingredients.map(i => `${i.amount}×${i.name}`).join(' + ')}. You hold: ${held.join(', ')}. MISSING: ${missing.join(', ')}. => Acquire the missing item(s) FIRST (craft if craftable, smelt in a furnace if it's a plate, mine if it's ore) — do NOT re-propose crafting '${item}' until you hold every ingredient.`
+}
+
 function diffRecord(before: Record<string, number>, after: Record<string, number>): { gained: string[], lost: string[] } {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
   const gained: string[] = []
@@ -174,6 +209,12 @@ function scanFromRaw(raw: Record<string, unknown>): ScanResult {
         }
         if (typeof e.oreUnder === 'number') {
           ent.oreUnder = e.oreUnder
+        }
+        // Crafting machines carry the posed recipe (name or 'none') — dropped before, so the
+        // agent had to N×getEntity to see who produces what. Copied conditionally (absent on
+        // non-crafting entities like belts/inserters).
+        if (typeof e.recipe === 'string') {
+          ent.recipe = e.recipe
         }
         entities.push(ent)
       }

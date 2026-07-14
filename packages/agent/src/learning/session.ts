@@ -8,7 +8,7 @@ import { extractLastJsonLine } from './json'
 import { createGameDataCache, createOps, extractEntryName, runSkill, syncCacheEpoch } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
-import { captureState as captureStateFn, parseScan } from './state'
+import { captureState as captureStateFn, diagnoseCraftFailure, parseScan } from './state'
 
 const logger = useLogg('learning').useGlobalConfig()
 
@@ -49,6 +49,9 @@ export interface LearningSessionDeps {
   deterministicCritic?: boolean
   /** When false, disable the per-session static-knowledge cache (recipe/entity/craft-plan). Default: enabled. */
   gameDataCache?: boolean
+  /** When true, the loop runs headless (the mod simulates character-based ops). Emits a
+   *  machine-parseable JSON recap at the end so an improvement can be measured without a client. */
+  headlessTestMode?: boolean
 }
 
 export interface LearningController {
@@ -141,7 +144,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   const completed: string[] = []
   // Failed objectives WITH their critique (why they failed) so the curriculum can fix the
   // cause / pick a different prerequisite instead of blindly re-proposing the same string.
-  const failedDetails: { objective: string, critique: string }[] = []
+  const failedDetails: { objective: string, critique: string, item?: string }[] = []
   // TOTAL failure count per (normalised) objective — NOT just consecutive. A curriculum can
   // loop across N alternating objectives (A fails, B succeeds, A fails again…), so a purely
   // consecutive counter never fires. Counting total failures per objective catches those cycles.
@@ -191,7 +194,14 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       return true
     }
     const critique = result.verdict?.critique ?? 'no critique'
-    failedDetails.push({ objective, critique })
+    // Retain the target item (from the success check) so the next curriculum turn can look up its
+    // EXACT recipe and diagnose the missing ingredient instead of guessing (see diagnoseCraftFailure).
+    const failItem = successCheck
+      ? (successCheck.kind === 'acquire' || successCheck.kind === 'produce')
+          ? successCheck.item
+          : (successCheck.kind === 'build' ? successCheck.entity : undefined)
+      : undefined
+    failedDetails.push({ objective, critique, item: failItem })
     // Total failures for THIS objective (across the whole run, not just consecutively).
     const key = normObjective(objective)
     const failTotal = (failCounts.get(key) ?? 0) + 1
@@ -269,6 +279,18 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
             .map(f => f.objective)
             .filter(o => (failCounts.get(normObjective(o)) ?? 0) >= 2)
           const forbidSet = new Set(forbidObjectives.map(normObjective))
+          // EXACT recipe diagnosis for recently-failed crafts: look up each failed target's real
+          // recipe (from the game's recipe graph) + which ingredient the player is short of, so the
+          // curriculum proposes the right prerequisite instead of guessing (the "missing
+          // stone-furnace" wall). Only failed objectives with a target item are diagnosable.
+          const failedRecipeDiagnosis: string[] = []
+          const recentItems = [...new Set(failedDetails.map(f => f.item).filter((x): x is string => x !== undefined))].slice(-3)
+          for (const item of recentItems) {
+            const diag = await diagnoseCraftFailure(item, state, deps.raw).catch(() => null)
+            if (diag) {
+              failedRecipeDiagnosis.push(diag)
+            }
+          }
           let proposed: Awaited<ReturnType<typeof proposeNextObjective>> = null
           // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
           for (let r = 1; r <= 3 && !proposed && running; r++) {
@@ -282,6 +304,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
               skills: library.summary(),
               completed,
               failedDetails,
+              failedRecipeDiagnosis,
               forbidObjectives: [...new Set(forbidObjectives)],
               model: deps.actionModel,
             })
@@ -318,6 +341,25 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     }
 
     logger.withFields({ completed: completed.length, failed: failedDetails.length, knownSkills: library.size() }).log('Learning session finished. Idle.')
+
+    // Headless test mode: emit a machine-parseable JSON recap so an improvement can be measured
+    // (completed/total, skills learned, final production counters) without a human reading logs.
+    if (deps.headlessTestMode) {
+      let production: Record<string, number> | null = null
+      try { production = await captureProduction() } catch { production = null }
+      const total = completed.length + failedDetails.length
+      const recap = {
+        completed: completed.length,
+        failed: failedDetails.length,
+        total,
+        successRate: total > 0 ? Math.round((completed.length / total) * 1000) / 1000 : 0,
+        knownSkills: library.size(),
+        production,
+        completedObjectives: completed,
+        failedObjectives: failedDetails.map(f => f.objective),
+      }
+      logger.withFields({ recap, context: 'headless-recap' }).log(`HEADLESS_RECAP ${JSON.stringify(recap)}`)
+    }
   }
 
   void loop()

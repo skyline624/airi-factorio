@@ -1,7 +1,40 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) and snake_case JSON keys */
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { buildBatchedCaptureCommand, buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diffState, parseBatchedCapture, parseGameState, parseScan } from './state'
+import { buildBatchedCaptureCommand, buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diagnoseCraftFailure, diffState, parseBatchedCapture, parseGameState, parseScan } from './state'
+
+describe('diagnoseCraftFailure', () => {
+  const state = (inv: Record<string, number>): GameState => ({ tick: 0, inventory: inv, entities: {} })
+
+  it('returns the EXACT missing ingredient vs the held inventory (the drill→stone-furnace wall)', async () => {
+    // The mod's `describe` returns the recipe for burner-mining-drill: 3 plate + 3 gear + 1 furnace.
+    // The player holds plates + gears but NO furnace → the diagnosis must name stone-furnace.
+    const raw = async () => '{"recipe":{"name":"burner-mining-drill","ingredients":[{"name":"iron-plate","amount":3},{"name":"iron-gear-wheel","amount":3},{"name":"stone-furnace","amount":1}],"products":[{"name":"burner-mining-drill","amount":1}],"enabled":true,"category":"crafting"}}'
+    const diag = await diagnoseCraftFailure('burner-mining-drill', state({ 'iron-plate': 39, 'iron-gear-wheel': 5 }), raw)
+    expect(diag).not.toBeNull()
+    expect(diag).toContain('stone-furnace (have 0/1)')
+    expect(diag).toContain('MISSING')
+    // The satisfied ingredients are listed too, with their held amounts.
+    expect(diag).toContain('iron-plate 39/3')
+  })
+
+  it('returns null when the recipe is already satisfied (the failure was NOT a missing ingredient)', async () => {
+    const raw = async () => '{"recipe":{"ingredients":[{"name":"iron-plate","amount":3}],"enabled":true}}'
+    expect(await diagnoseCraftFailure('x', state({ 'iron-plate': 10 }), raw)).toBeNull()
+  })
+
+  it('returns null for a raw resource with no recipe', async () => {
+    const raw = async () => '{}' // describe returns no `recipe` for a raw resource
+    expect(await diagnoseCraftFailure('iron-ore', state({}), raw)).toBeNull()
+  })
+
+  it('escapes a quote in the item name when building the RCON call', async () => {
+    let captured = ''
+    const raw = async (cmd: string) => { captured = cmd; return '{}' }
+    await diagnoseCraftFailure("weird'name", state({}), raw)
+    expect(captured).toContain("weird\\'name")
+  })
+})
 
 describe('parseGameState', () => {
   it('parses a normal snapshot and maps snake_case fields', () => {
@@ -141,6 +174,21 @@ describe('parseScan', () => {
     expect(s.origin).toEqual({ x: 1, y: 2 })
     expect(s.entities[0]).toEqual({ name: 'transport-belt', type: 'transport-belt', x: 5, y: 12, direction: 'east', status: 'working' })
     expect(s.resources['iron-ore']).toEqual({ count: 500, x: -3, y: 8 })
+  })
+
+  it('copies the posed recipe for crafting machines and omits it for non-crafting entities', () => {
+    const json = JSON.stringify({
+      entities: [
+        { name: 'assembling-machine-1', type: 'assembling-machine', x: 10, y: 4, direction: 'north', status: 'working', recipe: 'iron-gear-wheel' },
+        { name: 'assembling-machine-1', type: 'assembling-machine', x: 12, y: 4, direction: 'north', status: 'no_recipe', recipe: 'none' },
+        { name: 'transport-belt', type: 'transport-belt', x: 11, y: 5, direction: 'east', status: 'working' },
+      ],
+      resources: {},
+    })
+    const s = parseScan(json)
+    expect(s.entities[0]?.recipe).toBe('iron-gear-wheel')
+    expect(s.entities[1]?.recipe).toBe('none')
+    expect(s.entities[2]?.recipe).toBeUndefined()
   })
 
   it('recovers from a raw RCON reply with the command echo + Lua braces', () => {

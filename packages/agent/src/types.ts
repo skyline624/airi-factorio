@@ -59,6 +59,11 @@ export interface LearningConfig {
   deterministicCritic: boolean
   /** When true, cache static game-data lookups (recipe/entity/craft-plan) per session to cut redundant RCON round-trips. */
   gameDataCache: boolean
+  /** When true, run the full learning loop headless WITHOUT a connected Factorio client: the
+   *  mod simulates character-based ops (walk/mine/craft/attack) so the loop can validate
+   *  improvements without real movement/mining. Skips `waitForPlayer` and sends `set_test_mode`
+   *  to the mod on boot. Production runs leave this false (the agent always sends `set_test_mode(false)`). */
+  headlessTestMode: boolean
 }
 
 export interface AiriConfig {

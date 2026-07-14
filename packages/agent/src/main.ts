@@ -145,9 +145,24 @@ async function main() {
 
   const gameLogger = useLogg('game').useGlobalConfig()
 
-  // Don't start any action loop until there's a character in-game to drive.
-  if (learningConfig.enabled || autonomousConfig.enabled) {
+  // Don't start any action loop until there's a character in-game to drive — UNLESS headless
+  // test mode, where the mod simulates character-based ops without a connected client.
+  if ((learningConfig.enabled || autonomousConfig.enabled) && !learningConfig.headlessTestMode) {
     await waitForPlayer()
+  }
+
+  // Tell the mod whether to run headless test mode. Always send (true in test mode, false
+  // otherwise) so a value persisted in a save can't leak into a real play session. In normal
+  // mode waitForPlayer already gated RCON up; in headless mode (wait skipped) poll briefly.
+  if (learningConfig.headlessTestMode) {
+    for (let i = 0; i < 40; i++) {
+      try { await rconCommand(buildPlayerPresenceCommand(factorioConfig.playerName)); break }
+      catch { await new Promise(resolve => setTimeout(resolve, 1000)) }
+    }
+  }
+  await rconCommand(`/c remote.call('autorio_operations','set_test_mode',${learningConfig.headlessTestMode ? 'true' : 'false'})`)
+  if (learningConfig.headlessTestMode) {
+    logger.log('Headless test mode ON — character-based ops (walk/mine/craft/attack) are simulated; no client required')
   }
 
   // --- Learning mode (Voyager-inspired): the agent WRITES & runs skill code. ---
@@ -177,6 +192,7 @@ async function main() {
       maxRetries: learningConfig.maxRetries,
       deterministicCritic: learningConfig.deterministicCritic,
       gameDataCache: learningConfig.gameDataCache,
+      headlessTestMode: learningConfig.headlessTestMode,
     })
 
     for await (const buffer of ws.source) {
@@ -277,7 +293,9 @@ async function main() {
   // objectives come from the HUMAN CHAT (and the AIRI general) — no curriculum, no goal.
   // One unified engine (renderMap/placeAt/skills/critic); the mode only changes the
   // objective source. (Replaces the old prompt.md/operationCommands reactive path.)
-  await waitForPlayer()
+  if (!learningConfig.headlessTestMode) {
+    await waitForPlayer()
+  }
   logger.log('Starting in REACTIVE mode (chat-driven action-as-code)')
   const raw = async (input: string): Promise<string> => rconCommand(input)
   const session = startLearningSession({
@@ -302,6 +320,7 @@ async function main() {
     maxRetries: learningConfig.maxRetries,
     deterministicCritic: learningConfig.deterministicCritic,
     gameDataCache: learningConfig.gameDataCache,
+    headlessTestMode: learningConfig.headlessTestMode,
   })
 
   // A spark:command from the AIRI general is a chat-equivalent objective.
