@@ -58,7 +58,19 @@ After building + fueling, `await ops.scan()` and check EACH machine's `status`. 
 
 When a status is confusing (e.g. an assembler stuck `item_ingredient_shortage`, or a fluid machine `no_input_fluid`), call `await ops.getEntity({x: e.x, y: e.y})` on that scan entity to see its `missingIngredients`, its `fluids` (each box's held `fluid:{name,amount}` + per-connection `linked` state — `linked:false` = the pipe didn't connect, `fluid` absent = the box is empty), and — for a `transport-belt` — its `belt` (the `input`/`output` tiles derived from its facing + the `left`/`right` lane contents), and fix the exact cause.
 
-Don't end the function while a machine you built is not `working` (or fixes are exhausted). `ops.log(...)` the statuses you saw (the verifier reads these).
+Don't end the function while a machine you built is not `working` (or fixes are exhausted).
+
+## LOG a diagnostic after every key step (your retry reads these)
+
+On a RETRY, your previous attempt's `ops.log` output is fed back to you as `LAST ATTEMPT'S LOGS` — that is how you learn what actually went wrong and fix it. So `ops.log(...)` a concise, **actionable** diagnostic after each step that can fail or take time, so the next attempt can act on it (not guess). A useless log is one that doesn't name the cause; a useful one states the op, its `ok`/`error`, and the measurable detail:
+
+- After a placement/fuel/feed: `ops.log(\`furnace placed ok=${r.ok} ${r.ok ? '' : r.error}\`)` then `ops.log('furnace fuel: 5 coal loaded')`.
+- After a `wait`: `ops.log(\`waited ${n} ticks (~${(n/60).toFixed(0)}s) for smelting\`)` — and the wait MUST be long enough: a stone furnace smelts ~1 plate / 100 ticks, so to smelt 5 plates wait ≥ 600 ticks, 20 plates ≥ 2200 ticks. A `wait(180)` (3s) smelts only ~2 plates — that is the recurring smelt-timeout failure. Wait the FULL time the recipe needs, then collect.
+- After collecting: `ops.log(\`collected ${count} iron-plate, hold ${inv['iron-plate'] ?? 0}\`)`.
+- After a craft: `ops.log(\`craft ${item} ok=${r.ok} ${r.ok ? '' : r.error}\`)` — the mod's error names the exact missing ingredient (`missing 1 stone-furnace`); if it failed, your NEXT step is to acquire that item, not to retry the same craft.
+- After `scan`: `ops.log(\`drill ${d.name}: ${d.status}\`)` for each machine you care about.
+
+If a step failed, the log MUST carry its `.error` (the game's exact message). Bare `ops.log('done')` / `ops.log('failed')` with no detail is forbidden — it leaves the retry blind.
 
 ## The `ops` API (the ONLY thing you may call)
 
