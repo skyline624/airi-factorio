@@ -65,7 +65,20 @@ Don't end the function while a machine you built is not `working` (or fixes are 
 On a RETRY, your previous attempt's `ops.log` output is fed back to you as `LAST ATTEMPT'S LOGS` — that is how you learn what actually went wrong and fix it. So `ops.log(...)` a concise, **actionable** diagnostic after each step that can fail or take time, so the next attempt can act on it (not guess). A useless log is one that doesn't name the cause; a useful one states the op, its `ok`/`error`, and the measurable detail:
 
 - After a placement/fuel/feed: `ops.log(\`furnace placed ok=${r.ok} ${r.ok ? '' : r.error}\`)` then `ops.log('furnace fuel: 5 coal loaded')`.
-- After a `wait`: `ops.log(\`waited ${n} ticks (~${(n/60).toFixed(0)}s) for smelting\`)` — and the wait MUST be long enough: a stone furnace smelts ~1 plate / 100 ticks, so to smelt 5 plates wait ≥ 600 ticks, 20 plates ≥ 2200 ticks. A `wait(180)` (3s) smelts only ~2 plates — that is the recurring smelt-timeout failure. Wait the FULL time the recipe needs, then collect.
+- **For a machine to PRODUCE (smelt/mine) or for production to rise — POLL, don't guess one big wait.** A stone furnace smelts ~1 plate / 100 ticks; a drill mines ~1 ore / 100 ticks. Guessing a single `wait(N)` is the recurring failure (under-wait → production +2 < needed → the whole objective fails). Instead loop a short `wait` + a check until the machine is `working` AND the output/production has actually appeared, BOUNDED so you can't loop forever:
+  ```js
+  // After placing+fueling+feeding the furnace, POLL until it has smelted enough:
+  for (let i = 0; i < 20; i++) {                       // 20 × 120 ticks = 2400 ticks (~40s) cap
+    await ops.wait(120)
+    const s = await ops.scan(12)
+    const f = s.entities.find(e => e.type === 'furnace')
+    ops.log(`poll ${i}: furnace ${f?.status ?? '?'}`)
+    if (f?.status === 'working') break                // it IS smelting
+  }
+  const got = await ops.collectOutput('stone-furnace', 'iron-plate')
+  ops.log(`collected iron-plate ok=${got.ok} hold ${(await ops.getState()).inventory['iron-plate'] ?? 0}`)
+  ```
+  The same POLL-after-starting applies to a drill (wait + scan until `status === 'working'` + `mining` is set) and to `automateResource` (it places the chain; then POLL until the drill is `working`, so production rises before you check). NEVER call `automateResource`/`placeDrillOn`/fuel and immediately end the function — the machine needs ticks to produce; POLL first.
 - After collecting: `ops.log(\`collected ${count} iron-plate, hold ${inv['iron-plate'] ?? 0}\`)`.
 - After a craft: `ops.log(\`craft ${item} ok=${r.ok} ${r.ok ? '' : r.error}\`)` — the mod's error names the exact missing ingredient (`missing 1 stone-furnace`); if it failed, your NEXT step is to acquire that item, not to retry the same craft.
 - After `scan`: `ops.log(\`drill ${d.name}: ${d.status}\`)` for each machine you care about.
@@ -141,16 +154,19 @@ async function automateIronAndCoal(state, ops) {
   const iron = await ops.automateResource('iron-ore')
   if (!iron.ok) { ops.log(`iron: ${iron.error}`); return }
 
-  // 3. VERIFY via scan; a bad status means SUPPLY input/fuel, never relocate.
-  await ops.wait(180)
-  const scan = await ops.scan(20)
-  for (const d of scan.entities.filter(e => e.type === 'mining-drill')) {
-    ops.log(`drill ${d.mining}: ${d.status}`)
+  // 3. VERIFY via POLL — wait + scan in a BOUNDED loop until the drill is actually working.
+  //    A single guessed wait(180) under-waits (the recurring failure); POLL until producing.
+  for (let i = 0; i < 20; i++) {
+    await ops.wait(120)
+    const scan = await ops.scan(20)
+    const drill = scan.entities.find(e => e.type === 'mining-drill')
+    ops.log(`poll ${i}: drill ${drill?.mining ?? '?'}: ${drill?.status ?? '?'}`)
+    if (drill?.status === 'working') break
   }
 }
 ```
 
-**Shape to copy:** read state → `if already satisfied, return` → call the high-level primitive (`automateResource`/`buildSteamPower`/`connectPowerTo`) → `if (!ok) { ops.log(error); return }` → `wait` + `scan` to verify. The BODY only — no `import`/`require`/`process`/`fetch`/timers (the sandbox exposes only `ops`, `state`, `console`). One `async function <name>(state, ops)` as the LAST declaration; helpers above it.
+**Shape to copy:** read state → `if already satisfied, return` → call the high-level primitive (`automateResource`/`buildSteamPower`/`connectPowerTo`) → `if (!ok) { ops.log(error); return }` → **POLL** (`wait(120)` + `scan` in a bounded `for` loop until `working`, never one guessed `wait`) → `ops.log` the result. The BODY only — no `import`/`require`/`process`/`fetch`/timers (the sandbox exposes only `ops`, `state`, `console`). One `async function <name>(state, ops)` as the LAST declaration; helpers above it.
 
 ## Rules
 
