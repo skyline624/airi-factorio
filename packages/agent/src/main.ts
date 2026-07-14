@@ -19,6 +19,21 @@ import { initRcon, rconCommand, rconSay } from './rcon'
 setGlobalFormat(Format.Pretty)
 const logger = useLogg('main').useGlobalConfig()
 
+// A long headless/autonomous run sends many RCON commands; when the sandbox or the settle-bus
+// times a skill out, an in-flight `command()` is abandoned and its late RCON-timeout rejection
+// has no awaiter → an unhandled rejection that would CRASH the whole agent. These transient
+// RCON errors (timeout, connection closed) are expected and recoverable — swallow them so the
+// run continues (the settle-bus / sandbox already moved on). Any OTHER unhandled rejection is
+// logged loudly so a real bug still surfaces, but still doesn't kill the run.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason)
+  if (/RCON command timed out|RCON (auth )?timeout|RCON connection closed|RCON not connected/i.test(msg)) {
+    logger.withFields({ reason: msg }).warn('Swallowed a transient RCON rejection (abandoned command); run continues')
+    return
+  }
+  logger.withFields({ reason: reason instanceof Error ? reason.stack : reason }).error('Unhandled rejection (run continues, but this is likely a bug)')
+})
+
 // Throttle player events forwarded to the LLM (real-time ms, distinct from the
 // in-game tick throttle on the mod side) to avoid spamming / accumulating calls.
 const lastForwardedAt = new Map<string, number>()
