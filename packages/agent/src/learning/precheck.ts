@@ -1,4 +1,4 @@
-import type { GameState, SuccessCheck } from './types'
+import type { GameState, ScanResult, SuccessCheck } from './types'
 
 /**
  * A deterministic pre-critic. Many objectives are MECHANICAL — "mine 20 iron
@@ -21,6 +21,8 @@ export interface PrecheckInput {
   /** Force-wide production counters at objective start / end (counts items MADE even if then consumed). */
   prodBefore?: Record<string, number> | null
   prodAfter?: Record<string, number> | null
+  /** Post-run factory census (entities with status/mining/recipe). Used only by the 'status' kind of `evaluateSuccessCheck` — the build check (`entGained`) alone would PASS on a built-but-not-running machine, so the roadmap asks for a machine status (e.g. steam-engine 'working'). Absent in the heuristic precheck path and in unit tests that don't wire a scan. */
+  scanAfter?: ScanResult
 }
 
 export interface PrecheckResult {
@@ -184,6 +186,25 @@ export function evaluateSuccessCheck(check: SuccessCheck, input: PrecheckInput):
       return done
         ? { decided: true, success: true, critique: '', reasoning: 'a technology completed (researchedCount increased)' }
         : { decided: true, success: false, critique: 'No technology completed. Ensure a powered lab with science packs, then start the research.', reasoning: 'researchedCount unchanged' }
+    }
+    case 'status': {
+      // A build check would PASS on a built-but-not-running machine (steam-engine no_water, lab
+      // no_power). The roadmap uses 'status' to require the machine to actually BE in `want`
+      // (e.g. 'working') post-run, read from the factory census. PASS when at least one named
+      // entity has that status.
+      const entity = check.entity ?? ''
+      const want = check.want ?? 'working'
+      if (!input.scanAfter) {
+        return { decided: false }
+      }
+      const matches = input.scanAfter.entities.filter(e => e.name === entity)
+      if (matches.length === 0) {
+        return { decided: true, success: false, critique: `No '${entity}' found in the factory to check its status. Build it first.`, reasoning: `no ${entity} in scan` }
+      }
+      const hit = matches.find(e => e.status === want)
+      return hit
+        ? { decided: true, success: true, critique: '', reasoning: `${entity} status '${want}' (found at ${hit.x},${hit.y})` }
+        : { decided: true, success: false, critique: `'${entity}' is not '${want}' (statuses: ${matches.map(m => m.status).join(', ')}). Fix the cause (fuel/power/feed) and re-check.`, reasoning: `${entity} status != ${want}` }
     }
     default:
       // Unknown/malformed kind — let the caller fall back to the heuristic precheck/LLM.

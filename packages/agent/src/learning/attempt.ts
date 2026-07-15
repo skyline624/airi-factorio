@@ -154,21 +154,38 @@ export async function attemptObjective(objective: string, context: string, deps:
     const ops = deps.makeOps()
     const result = await runSkill(code, ops, current, { timeoutMs: deps.sandboxTimeoutMs })
     logs = result.logs
+    // Surface the skill's RUNTIME error (e.g. a primitive that returned !ok and threw — the
+    // deterministic dispatcher throws "bootstrap: could not fuel..." / "automateResource: ...").
+    // Without this the throw is swallowed by the sandbox and the only visible signal is the
+    // successCheck FAIL ("hold 0"), which says WHAT didn't happen but not WHY. Also surface the
+    // skill's own ops.log trace (the bootstrap logs furnace fuel/input/output at each step) so the
+    // exact failing step is visible in the agent log on a failed run.
+    if (!result.ok) {
+      if (result.error) {
+        deps.log?.(`  -> run error: ${result.error}`)
+      }
+      if (logs.length) {
+        deps.log?.(`  -> skill logs: ${logs.join(' | ')}`)
+      }
+    }
 
     // Post-run evidence. Prefer the batched one-round-trip capture; fall back to the
     // three separate calls when no batch capture is wired (e.g. in unit tests).
     let after: GameState
     let scanSummary: string | undefined
+    let scanAfter: ScanResult | undefined
     let prodAfter: Record<string, number> | null
     if (deps.captureBatch) {
       const batch = await deps.captureBatch()
       after = batch.state
+      scanAfter = batch.scan
       scanSummary = summarizeScan(batch.scan)
       prodAfter = batch.production
     }
     else {
       after = await deps.captureState()
-      scanSummary = deps.captureScan ? summarizeScan(await deps.captureScan()) : undefined
+      scanAfter = deps.captureScan ? await deps.captureScan() : undefined
+      scanSummary = scanAfter ? summarizeScan(scanAfter) : undefined
       prodAfter = deps.captureProduction ? await deps.captureProduction() : null
     }
     const productionSummary = summarizeProductionDelta(prodBefore, prodAfter)
@@ -181,8 +198,8 @@ export async function attemptObjective(objective: string, context: string, deps:
     const pre = deps.deterministicCritic === false
       ? { decided: false as const }
       : (successCheck
-          ? evaluateSuccessCheck(successCheck, { objective, before, after, prodBefore, prodAfter })
-          : precheckVerdict({ objective, before, after, prodBefore, prodAfter }))
+          ? evaluateSuccessCheck(successCheck, { objective, before, after, prodBefore, prodAfter, scanAfter })
+          : precheckVerdict({ objective, before, after, prodBefore, prodAfter, scanAfter }))
     const verdict: Verdict = pre.decided
       ? { success: pre.success ?? false, critique: pre.critique ?? '', reasoning: pre.reasoning }
       : await deps.verify({ objective, before, after, logs, scanSummary, productionSummary, model: deps.criticModel })

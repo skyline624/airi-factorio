@@ -185,6 +185,10 @@ export function createOps(deps: OpsDeps): Ops {
       const r = Math.max(1, Math.floor(radius))
       return parseScan(await deps.raw(`/c remote.call('autorio_tools','scan_area',${r})`))
     },
+    scanFactory: async (): Promise<ScanResult> => {
+      bumpOpCount()
+      return parseScan(await deps.raw(`/c remote.call('autorio_tools','scan_factory')`))
+    },
     getRecipe: async (name: string): Promise<RecipeInfo | null> => {
       bumpOpCount()
       if (cache && cache.recipe.has(name)) {
@@ -399,7 +403,6 @@ export function createOps(deps: OpsDeps): Ops {
       if (have >= count) {
         return { ok: true, data: { had: have } }
       }
-      const need = count - have
       // Craftable (has an enabled recipe) -> craftAll. Otherwise it's a raw resource -> mine it.
       const recipe = await ops.getRecipe(item)
       if (recipe && recipe.enabled) {
@@ -414,7 +417,11 @@ export function createOps(deps: OpsDeps): Ops {
         }
         await ops.walkTo(near.x, near.y)
       }
-      const mined = await ops.mineEntity(item, need)
+      // mineEntity's count is an ABSOLUTE threshold ("mine until you HOLD count"), not a delta —
+      // the mod-side loop (control.ts MINING) breaks when inv.get_item_count >= count. So pass the
+      // absolute `count`, NOT `need` (count-have): passing need with have>0 mined until inv=need
+      // (< count) and ensure failed "only have need/count" — the latent bug the coal-25 bump exposed.
+      const mined = await ops.mineEntity(item, count)
       if (!mined.ok) {
         return { ok: false, error: `ensure: failed mining '${item}': ${mined.error}` }
       }
@@ -437,6 +444,60 @@ export function createOps(deps: OpsDeps): Ops {
       const moved = await ops.moveItems({ item, entity: entityName, maxCount: amount, toEntity: true })
       if (!moved.ok) {
         return { ok: false, error: `fuel: could not load '${item}' into '${entityName}': ${moved.error}` }
+      }
+      return { ok: true }
+    },
+    fuelAt: async (entityName: string, at: { x: number, y: number }, item = 'coal', amount = 5): Promise<OpResult> => {
+      // Fuel the SPECIFIC machine at `at` (the one just placed), not the nearest. `move_items` is
+      // player-centred radius 32 with NO distance priority — it iterates same-name machines in
+      // spatial order and caps the load TOTAL, so when a second same-name machine is within 32 (e.g.
+      // the iron drill while fuelling the just-placed coal drill, ~24 tiles away) the fuel SPLIT
+      // across both and the new machine got 0 → the rung stalled ("produce coal +0"). Walk to the
+      // target, then step AWAY from the nearest other same-name machine so only the target is within
+      // the 32-tile search, then moveItems.
+      const have = (await ops.getState()).inventory[item] ?? 0
+      if (have < amount) {
+        const got = await ops.ensure(item, amount)
+        if (!got.ok) {
+          return { ok: false, error: `fuelAt: could not obtain ${amount}x '${item}': ${got.error}` }
+        }
+      }
+      await ops.walkTo(at.x, at.y)
+      // Exclude other same-name machines from the radius-32 search by walking the player past the
+      // 32-tile boundary that separates the target from its nearest neighbour.
+      const scan = await ops.scanFactory()
+      const others = scan.entities.filter(e => e.name === entityName && (Math.abs(e.x - at.x) > 0.5 || Math.abs(e.y - at.y) > 0.5))
+      if (others.length > 0) {
+        let nearest = others[0]
+        let nd = Infinity
+        for (const o of others) {
+          const d = (o.x - at.x) ** 2 + (o.y - at.y) ** 2
+          if (d < nd) {
+            nd = d
+            nearest = o
+          }
+        }
+        const otherDist = Math.sqrt(nd)
+        if (otherDist < 32) {
+          // Direction from the other machine toward the target (walk the player that way to leave
+          // the other behind the 32 boundary). Walk far enough that the OTHER's bounding box (a 2x2
+          // drill/furnace adds ~1 tile) is >32 from the player (otherDist + walkDist > 33), but stay
+          // <32 from the target so moveItems still finds it (walkDist < 32). 14 was too short (coal
+          // drill 12 from the iron drill → the iron's 2x2 box at distance 33 was still swept → split
+          // gave the coal drill only ~2 coal → it mined 2 then ran out → "produced coal +2"). Use
+          // 38 - otherDist for a clear margin; cap at 30 so the target stays within 32.
+          const walkDist = Math.min(30, Math.max(14, 38 - otherDist))
+          const dx = at.x - nearest.x
+          const dy = at.y - nearest.y
+          const len = Math.hypot(dx, dy) || 1
+          const px = Math.round(at.x + (dx / len) * walkDist)
+          const py = Math.round(at.y + (dy / len) * walkDist)
+          await ops.walkTo(px, py)
+        }
+      }
+      const moved = await ops.moveItems({ item, entity: entityName, maxCount: amount, toEntity: true })
+      if (!moved.ok) {
+        return { ok: false, error: `fuelAt: could not load '${item}' into '${entityName}' at (${at.x},${at.y}): ${moved.error}` }
       }
       return { ok: true }
     },
@@ -528,10 +589,46 @@ export function createOps(deps: OpsDeps): Ops {
       // nearest coal — which is the patch UNDER the drill we just placed — and `mineEntity` would
       // DESTROY that drill (the bug we're fixing). Doing it up front mines a BARE patch (find_nearest
       // is now drill-aware) and leaves coal in hand so `fuel` short-circuits without hand-mining.
-      if (((await ops.getState()).inventory['coal'] ?? 0) < 10) {
-        const gotCoal = await ops.ensure('coal', 10)
+      // [FIX 1] Production baseline + post-place poll. The produce successCheck reads the FORCE
+      // production counter at attempt end; automateResource used to return right after placing+
+      // fueling (~0.4s), before any plate/coal was smelted/mined → +0 → FAIL (the "produce
+      // iron-plate +0" wall). The chain works — it produced 92 plates once left to run (confirmed
+      // via production_stats) — it just needs time. Poll until the chain produces `target` of the
+      // output item (the plate for iron/copper, the raw resource for coal/stone), then return so the
+      // deterministic critic sees real output. 45×60 ticks ≈ 45 s (a plate smelts in ~3.5 s, a drill
+      // mines ~0.25 ore/s, so 3 is well within budget). target=3 matches the roadmap's produce-3
+      // successChecks; if the chain is too slow to make 3, the rung SHOULD fail.
+      const produceItem = plate ?? resource
+      const producedNow = async (): Promise<number> => (((await ops.productionStats())?.produced) ?? {})[produceItem] ?? 0
+      const prodStart = await producedNow()
+      // Poll target/timeout by output kind. A SMELTABLE rung (iron/copper) should smelt enough
+      // plates to feed the NEXT rung's drill (recipe = 9 iron-plate): poll to 6 (the successCheck
+      // floor is +3; the furnace keeps smelting past the poll break, so its output holds a batch the
+      // next rung can collectOutput). A raw rung (coal/stone) just verifies the drill produces, so
+      // target=3. 60×60 ticks ≈ 60 s for smeltable; 45×60 for raw. If the chain can't reach the
+      // target in time, the rung still PASSES at +3 (the successCheck floor).
+      const pollTarget = plate ? 6 : 3
+      const pollIters = plate ? 60 : 45
+      const waitForOutput = async (): Promise<void> => {
+        for (let i = 0; i < pollIters; i++) {
+          await ops.wait(60)
+          const got = await producedNow()
+          if (i % 5 === 0) {
+            ops.log(`automateResource(${resource}): poll ${i} ${produceItem} produced=${got} (need +${pollTarget} from baseline ${prodStart})`)
+          }
+          if (got - prodStart >= pollTarget) {
+            return
+          }
+        }
+        ops.log(`automateResource(${resource}): poll timed out — ${produceItem} reached ${await producedNow()} (baseline ${prodStart}, need +${pollTarget})`)
+      }
+      // FUEL UP FRONT: 15 coal so a smeltable rung can fuel its drill (5) AND its furnace (10). The
+      // furnace burns ~1.1 plate/coal (measured), so 10 coal smelts ~12 plates — enough for the
+      // next rung's drill (9 plates) + margin. A raw rung only fuels its drill (5), so 15 is plenty.
+      if (((await ops.getState()).inventory['coal'] ?? 0) < 15) {
+        const gotCoal = await ops.ensure('coal', 15)
         if (!gotCoal.ok) {
-          return { ok: false, error: `automateResource: could not bootstrap 10 coal for fuel (a bare coal patch with no drill on it is needed): ${gotCoal.error}` }
+          return { ok: false, error: `automateResource: could not bootstrap 15 coal for fuel (a bare coal patch with no drill on it is needed): ${gotCoal.error}` }
         }
       }
 
@@ -547,41 +644,83 @@ export function createOps(deps: OpsDeps): Ops {
       // fuel) instead of placing another — placeDrillOn is NOT idempotent (the mod stacks a new
       // drill beside the patch each call), which is why re-proposing "Automate copper" piled up 4
       // drills. Repair, don't rebuild.
-      const scan = await ops.scan(32)
+      // [FIX 3] Use the force-wide census (scanFactory), NOT a player-centred scan(32). A retry runs
+      // after the player mined coal (off the resource patch), so scan(32) around the player missed
+      // the placed drill → the retry re-crafted a drill instead of repairing → "need 9x iron-plate,
+      // have 3". The census sees the player's machines anywhere on the surface, with their `mining`.
+      const scan = await ops.scanFactory()
       const existing = scan.entities.filter(e => e.type === 'mining-drill' && e.mining === resource)
+      ops.log(`automateResource(${resource}): census found ${existing.length} existing drill(s) on ${resource}`)
       if (existing.length > 0) {
-        // Guarantee enough output items for the drills that still lack one (idempotent placers skip
-        // a drill that already has its output and don't consume an item for it).
+        // Best-effort output: obtain output items (furnace/chest) for drills that still LACK one.
+        // placeFurnaceAtDrill/placeChestAtDrill are idempotent — a drill that already has its output
+        // is skipped (no item consumed) and a misplaced one reclaimed — so DON'T fail the rung if
+        // ensureOutput can't get an item (e.g. no stone to craft a furnace): drills that already
+        // have an output still get re-FUELED below, and a lacking drill is logged + skipped.
         const outputItem = await ensureOutput(existing.length)
-        if (!outputItem) {
-          return { ok: false, error: noOutputErr }
-        }
         // placeFurnaceAtDrill/placeChestAtDrill target the NEAREST drill — walk to each in turn so
         // every stacked drill gets its output. Best-effort: a single-drill failure doesn't abort.
         for (const d of existing) {
           await ops.walkTo(d.x, d.y)
-          const out = plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem)
+          const outName = outputItem ?? (plate ? 'stone-furnace' : 'wooden-chest')
+          const out = plate ? await ops.placeFurnaceAtDrill(outName) : await ops.placeChestAtDrill(outName)
           if (!out.ok) {
             ops.log(`automateResource: repair — output for drill @${d.x},${d.y} failed: ${out.error}`)
           }
         }
-        // Fuel: move_items caps at `amount` TOTAL across nearby machines → scale to the drill count.
-        await ops.fuel('burner-mining-drill', 'coal', 5 * existing.length)
-        if (plate) {
-          await ops.fuel('stone-furnace', 'coal', 5 * existing.length)
+        // Re-fuel the existing drill(s) + furnace. This is the core repair: a no_fuel drill/furnace
+        // is the usual reason the chain stalled on the prior attempt (it placed + fueled but the
+        // one-shot fuel burned out, or the fuel op split across drills). fuelAt targets each drill
+        // at its own position so the coal isn't split with a neighbouring drill.
+        for (const d of existing) {
+          await ops.fuelAt('burner-mining-drill', { x: d.x, y: d.y }, 'coal', 5).catch(() => {})
         }
+        if (plate) {
+          await ops.fuel('stone-furnace', 'coal', 10 * existing.length)
+        }
+        await waitForOutput()
         return { ok: true, data: { resource, repaired: existing.length, output: plate ? 'furnace' : 'chest' } }
       }
 
       // BUILD (nothing here yet). Guarantee we HOLD the drill AND its output BEFORE placing —
       // placeDrillOn/placeChestAtDrill consume from the inventory and fail if empty. ensure crafts
       // the drill (iron+gears); the output is picked/obtained by ensureOutput (furnace or a chest).
+      // [FIX 2] The drill recipe is 3 iron-plate + 3 iron-gear-wheel (6 plate) + 1 stone-furnace
+      // (5 stone) = 9 iron-plate + 5 stone in hand. After a prior rung PLACED its drill, 0 drills +
+      // 0 furnaces remain and the smelted plates sit in the iron chain's furnace OUTPUT (not the
+      // hand); stone was spent in bootstrap. Gather both BEFORE ensure(drill) so its craftAll
+      // leaves-first doesn't fail on a missing leaf ("need 9x iron-plate (smelted, not
+      // hand-craftable)" / missing stone) — the exact cascade that sent the iron rung to open mode.
+      // Skipped when a drill is already held (the bootstrap rung holds the drill it just crafted).
+      const preBuild = (await ops.getState()).inventory
+      if ((preBuild[drillName] ?? 0) < 1) {
+        if ((preBuild['iron-plate'] ?? 0) < 9) {
+          // Pull iron-plate from the existing iron chain's furnace output (best-effort: on the very
+          // first rung the agent holds the bootstrap drill, so this block is skipped; a no-furnace
+          // collectOutput fails harmlessly and ensure(drill) then relies on the held stock).
+          await ops.collectOutput('stone-furnace', 'iron-plate').catch(() => {})
+        }
+        if (((await ops.getState()).inventory['stone'] ?? 0) < 5) {
+          const gs = await ops.ensure('stone', 5)
+          if (!gs.ok) {
+            return { ok: false, error: `automateResource: could not obtain 5 stone for the drill's furnace: ${gs.error}` }
+          }
+        }
+      }
       const haveDrill = await ops.ensure(drillName, 1)
       if (!haveDrill.ok) {
         return { ok: false, error: `automateResource: could not obtain a '${drillName}': ${haveDrill.error}` }
       }
+      // The drill's output item: a FURNACE for a smeltable ore (iron/copper — else no plates), or
+      // a CHEST for a raw ore (coal/stone — to collect it). The furnace is REQUIRED (no furnace → no
+      // smelting → the rung can't pass). The chest is OPTIONAL: a raw-ore drill increments the
+      // production counter whether the ore drops into a chest or on the ground, so the produce
+      // successCheck passes either way — and a wooden-chest needs 2 wood (none on a desert map) +
+      // an iron-chest needs 8 iron-plate (which the coal rung doesn't have after crafting its drill),
+      // so demanding one blocked coal ("could not obtain a chest"). Best-effort the chest; the furnace
+      // stays mandatory.
       const outputItem = await ensureOutput(1)
-      if (!outputItem) {
+      if (plate && !outputItem) {
         return { ok: false, error: noOutputErr }
       }
       const drill = await ops.placeDrillOn(resource, drillName)
@@ -596,23 +735,139 @@ export function createOps(deps: OpsDeps): Ops {
       if (dp && typeof dp.x === 'number' && typeof dp.y === 'number') {
         await ops.walkTo(dp.x, dp.y)
       }
-      // The drill's output: a furnace (smeltable) so it becomes plate, else a chest (coal/stone).
-      const output = plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem)
+      // Place the output item if we have one. For a raw ore with no chest, skip — the drill drops on
+      // the ground and production still counts (the successCheck reads the production counter).
+      const output: OpResult = outputItem
+        ? (plate ? await ops.placeFurnaceAtDrill(outputItem) : await ops.placeChestAtDrill(outputItem))
+        : { ok: true, data: { note: 'raw ore drops on the ground (no chest available — production still counts)' } }
       if (!output.ok) {
         return { ok: false, error: `automateResource: could not add the drill's ${plate ? 'furnace' : 'chest'} output: ${output.error}` }
       }
       // Fuel the burner-drill always; fuel the furnace too (burner furnaces need coal to smelt).
-      const fd = await ops.fuel('burner-mining-drill')
+      // Use fuelAt (the SPECIFIC drill at its placed position): move_items is player-centred radius
+      // 32 with no distance priority, so `fuel('burner-mining-drill')` would SPLIT the coal with any
+      // other drill within 32 (e.g. the iron drill while placing the coal drill) — the new drill got
+      // 0 and the rung stalled. fuelAt walks the player away from the other drill first.
+      const fd = await ops.fuelAt('burner-mining-drill', { x: dp?.x ?? 0, y: dp?.y ?? 0 })
       if (!fd.ok) {
         return { ok: false, error: `automateResource: could not fuel the drill: ${fd.error}` }
       }
       if (plate) {
-        const ff = await ops.fuel('stone-furnace')
+        const ff = await ops.fuel('stone-furnace', 'coal', 10)
         if (!ff.ok) {
           return { ok: false, error: `automateResource: could not fuel the furnace: ${ff.error}` }
         }
       }
+      await waitForOutput()
       return { ok: true, data: { resource, output: plate ? 'furnace' : 'chest', mining: dp?.mining } }
+    },
+    bootstrap: async (): Promise<OpResult> => {
+      // Hand-bootstrap the factory from an EMPTY inventory so the automation primitives can take
+      // over. automateResource('iron-ore') CANNOT start from scratch: it calls ensure('burner-mining-drill')
+      // → craftAll('iron-plate'), and iron-plate is SMELTED not crafted — so craftAll fails (the
+      // "craftAll circular dependency" wall). This rung mines 10 iron-ore + 10 stone + 10 coal,
+      // crafts a stone-furnace, smelts 5 iron-plate, crafts 2 iron-gear-wheel + 1 burner-mining-drill
+      // + a spare furnace, so automateResource can then craft/place a drill and a furnace from stock.
+      // Composes existing ops (ensure handles find/walk/mine, fuel handles insert, etc.) — no LLM.
+      // 10 coal smelts ~11 iron-plate (measured ratio ≈ 1.14 plate/coal in Factorio 2.0 — 1 coal =
+      // 4 MJ, iron-plate recipe = 3.5 MJ). The drill recipe is 3 plate + 3 gear (gear = 2 plate) =
+      // 9 plate; smelt 11 for margin. 7 coal only smelts 8 (the "Have 8, need 9" wall). The drill
+      // placed by automateResource later fuels itself from its own coal automation.
+      if (((await ops.getState()).inventory['coal'] ?? 0) < 10) {
+        const coal = await ops.ensure('coal', 10)
+        if (!coal.ok) {
+          return { ok: false, error: `bootstrap: could not obtain 10 coal: ${coal.error}` }
+        }
+      }
+      // 15 ore → 12 plates smelted (the drill recipe is 3 plate + 3 gear (gear=2 plate) = 9 plate;
+      // smelt 12 for margin). 15 stone → 2 furnaces (5 stone each) + margin.
+      const ore = await ops.ensure('iron-ore', 15)
+      if (!ore.ok) {
+        return { ok: false, error: `bootstrap: could not obtain 15 iron-ore: ${ore.error}` }
+      }
+      const stone = await ops.ensure('stone', 15)
+      if (!stone.ok) {
+        return { ok: false, error: `bootstrap: could not obtain 15 stone: ${stone.error}` }
+      }
+      // Smelt 12 iron-plate: craft a furnace, PLACE it (ensure only crafted it into the inventory;
+      // fuel/moveItems target a furnace ON THE MAP, so it must be placed first), fuel it, load ore,
+      // poll, collect to inventory.
+      const furnace = await ops.ensure('stone-furnace', 1)
+      if (!furnace.ok) {
+        return { ok: false, error: `bootstrap: could not craft a stone-furnace: ${furnace.error}` }
+      }
+      const me = (await ops.getState()).position
+      const spots = await ops.placementSpots('stone-furnace', me, 8, 'south')
+      if (!spots.spots.length) {
+        return { ok: false, error: 'bootstrap: no buildable tile for a stone-furnace near the player (clear space or move)' }
+      }
+      const spot = spots.spots[0]
+      const placed = await ops.placeAt('stone-furnace', { x: spot.x, y: spot.y, direction: 'south' })
+      if (!placed.ok) {
+        return { ok: false, error: `bootstrap: could not place the stone-furnace at (${spot.x},${spot.y}): ${placed.error}` }
+      }
+      ops.log(`bootstrap: furnace placed at ${spot.x},${spot.y}`)
+      const fuel = await ops.fuel('stone-furnace', 'coal', 10)
+      if (!fuel.ok) {
+        return { ok: false, error: `bootstrap: could not fuel the furnace: ${fuel.error}` }
+      }
+      let fst = await ops.getEntity({ x: spot.x, y: spot.y })
+      ops.log(`bootstrap: after fuel — fuel=${JSON.stringify(fst?.fuel)} input=${JSON.stringify(fst?.input)} output=${JSON.stringify(fst?.output)}`)
+      const loaded = await ops.moveItems({ item: 'iron-ore', entity: 'stone-furnace', maxCount: 12, toEntity: true })
+      if (!loaded.ok) {
+        return { ok: false, error: `bootstrap: could not load iron-ore into the furnace: ${loaded.error}` }
+      }
+      fst = await ops.getEntity({ x: spot.x, y: spot.y })
+      ops.log(`bootstrap: after load ore — fuel=${JSON.stringify(fst?.fuel)} input=${JSON.stringify(fst?.input)} output=${JSON.stringify(fst?.output)}`)
+      for (let i = 0; i < 40; i++) {
+        await ops.wait(60)
+        const s = await ops.getState()
+        // Smelted plates sit in the FURNACE OUTPUT until collectOutput — the inventory stays 0
+        // meanwhile, so checking only inventory made this poll run the full 40s every time (and
+        // pushed the bootstrap into the 120s sandbox timeout). Read the furnace output and break
+        // as soon as 12 plates are smelted (in test mode the furnace smelts ~2 plate/s, so ~6s).
+        fst = await ops.getEntity({ x: spot.x, y: spot.y })
+        const furnacePlates = fst?.output?.find(o => o.name === 'iron-plate')?.count ?? 0
+        const invPlates = s.inventory['iron-plate'] ?? 0
+        if (i % 5 === 0) {
+          ops.log(`bootstrap: poll ${i} tick=${s.tick} inv plates=${invPlates} furnace plates=${furnacePlates} fuel=${JSON.stringify(fst?.fuel)} input=${JSON.stringify(fst?.input)} output=${JSON.stringify(fst?.output)}`)
+        }
+        if (invPlates + furnacePlates >= 12) {
+          break
+        }
+      }
+      fst = await ops.getEntity({ x: spot.x, y: spot.y })
+      ops.log(`bootstrap: after 40s poll — fuel=${JSON.stringify(fst?.fuel)} input=${JSON.stringify(fst?.input)} output=${JSON.stringify(fst?.output)}`)
+      const collected = await ops.collectOutput('stone-furnace', 'iron-plate')
+      ops.log(`bootstrap: collectOutput ok=${collected.ok} err=${collected.error ?? ''}`)
+      if (!collected.ok) {
+        return { ok: false, error: `bootstrap: could not collect iron-plate from the furnace: ${collected.error}` }
+      }
+      const plates = (await ops.getState()).inventory['iron-plate'] ?? 0
+      ops.log(`bootstrap: plates in inventory=${plates}`)
+      if (plates < 9) {
+        return { ok: false, error: `bootstrap: smelted only ${plates} iron-plate (need 9 for drill+gears) — furnace may be no_fuel or unfed` }
+      }
+      // Craft the drill's ingredients explicitly, then craft the drill via craftItem (NOT
+      // craftAll/ensure). craftAll('burner-mining-drill') does leaves-first and craftPlan counts
+      // iron-plate = 9 (3 drill + 6 for 3 gears) WITHOUT deducting the gears already held — so it
+      // fails on the smelting step "need 9, have 8" even though we hold 8 plates + 2 gears (the
+      // "craftAll circular dependency" wall). craftItem just consumes the present ingredients.
+      // 3 gears (6 plate) + 1 furnace (consumed by the drill) + 1 spare furnace (for
+      // automateResource's drill-output) — all in inventory before the craftItem.
+      const gears = await ops.ensure('iron-gear-wheel', 3)
+      if (!gears.ok) {
+        return { ok: false, error: `bootstrap: could not craft 3 iron-gear-wheel: ${gears.error}` }
+      }
+      const furnaces = await ops.ensure('stone-furnace', 2)
+      if (!furnaces.ok) {
+        return { ok: false, error: `bootstrap: could not craft 2 stone-furnace (1 for the drill + 1 spare): ${furnaces.error}` }
+      }
+      const drill = await ops.craftItem('burner-mining-drill', 1)
+      if (!drill.ok) {
+        return { ok: false, error: `bootstrap: could not craft a burner-mining-drill (craftItem): ${drill.error}` }
+      }
+      return { ok: true, data: { ironPlate: plates } }
     },
     launchRocket: async (): Promise<OpResult> => {
       bumpOpCount()

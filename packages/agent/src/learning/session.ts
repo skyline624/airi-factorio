@@ -1,14 +1,18 @@
+import type { Intention, Rung } from './roadmap'
 import type { GameState, ScanResult, SuccessCheck } from './types'
 import { useLogg } from '@guiiai/logg'
 import { generateCode, summarizeScan } from './action'
 import { attemptObjective } from './attempt'
 import { verify } from './critic'
 import { proposeNextObjective } from './curriculum'
+import { dispatchIntent } from './intent-dispatcher'
 import { extractLastJsonLine } from './json'
+import { ROADMAP, selectRung } from './roadmap'
+import { diagnoseRung } from './roadmap-diagnose'
 import { createGameDataCache, createOps, extractEntryName, runSkill, syncCacheEpoch } from './runtime'
 import { createSettleBus } from './settle-bus'
 import { createSkillLibrary } from './skill-library'
-import { captureState as captureStateFn, diagnoseCraftFailure, parseScan } from './state'
+import { captureState as captureStateFn, diagnoseCraftFailure, diagnosePlaceFailure, parseScan } from './state'
 
 const logger = useLogg('learning').useGlobalConfig()
 
@@ -49,8 +53,10 @@ export interface LearningSessionDeps {
   deterministicCritic?: boolean
   /** When false, disable the per-session static-knowledge cache (recipe/entity/craft-plan). Default: enabled. */
   gameDataCache?: boolean
-  /** When true, the loop runs headless (the mod simulates character-based ops). Emits a
-   *  machine-parseable JSON recap at the end so an improvement can be measured without a client. */
+  /**
+   * When true, the loop runs headless (the mod simulates character-based ops). Emits a
+   *  machine-parseable JSON recap at the end so an improvement can be measured without a client.
+   */
   headlessTestMode?: boolean
 }
 
@@ -144,14 +150,38 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
   const completed: string[] = []
   // Failed objectives WITH their critique (why they failed) so the curriculum can fix the
   // cause / pick a different prerequisite instead of blindly re-proposing the same string.
-  const failedDetails: { objective: string, critique: string, item?: string }[] = []
+  const failedDetails: { objective: string, critique: string, item?: string, kind?: SuccessCheck['kind'] }[] = []
   // TOTAL failure count per (normalised) objective — NOT just consecutive. A curriculum can
   // loop across N alternating objectives (A fails, B succeeds, A fails again…), so a purely
   // consecutive counter never fires. Counting total failures per objective catches those cycles.
   const failCounts = new Map<string, number>()
 
+  // Deterministic roadmap mode (Phase 1, plans/warm-wiggling-spindle.md): zero-LLM rungs toward
+  // steam. The engine walks ROADMAP in order, dispatching each rung's primitive directly via the
+  // intent dispatcher (no generateCode LLM) and proving it with the deterministic critic. The LLM
+  // (open mode) takes over once the roadmap is exhausted or a rung fails unrecoverably. This is
+  // additive: open mode keeps the legacy curriculum + action-as-code path intact.
+  let mode: 'roadmap' | 'open' = 'roadmap'
+  const rungDone = new Set<string>()
+  let currentRung: Rung | null = null
+  let currentIntention: Intention | null = null
+  let openReason: string | null = null
+
   /** Normalised objective for repeat comparison (trim + lowercase + collapse whitespace). */
   const normObjective = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, ' ')
+
+  /**
+   * Routes the action step. In roadmap mode, dispatch the rung's intention to a single primitive
+   * call (NO LLM — `dispatchIntent` builds the code deterministically). In open/reactive mode,
+   * fall back to the LLM action-as-code generator. The downstream pipeline (lint, sandbox, critic)
+   * is unchanged — only "where the code comes from" is replaced.
+   */
+  const generateCodeRouted: typeof generateCode = async (input) => {
+    if (mode === 'roadmap' && currentIntention) {
+      return dispatchIntent(currentIntention)
+    }
+    return generateCode(input)
+  }
 
   async function runOneObjective(objective: string, context: string, successCheck?: SuccessCheck): Promise<boolean> {
     await deps.say(`New objective: ${objective}`).catch(() => {})
@@ -172,7 +202,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
       // +0 production delta (false FAIL on every 'produce' check). Falling back to the three
       // separate calls below costs one extra round-trip but actually measures production.
       resetTasks,
-      generateCode,
+      generateCode: generateCodeRouted,
       verify,
       skills,
       actionModel: deps.actionModel,
@@ -201,7 +231,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           ? successCheck.item
           : (successCheck.kind === 'build' ? successCheck.entity : undefined)
       : undefined
-    failedDetails.push({ objective, critique, item: failItem })
+    failedDetails.push({ objective, critique, item: failItem, kind: successCheck?.kind })
     // Total failures for THIS objective (across the whole run, not just consecutively).
     const key = normObjective(objective)
     const failTotal = (failCounts.get(key) ?? 0) + 1
@@ -241,16 +271,48 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     if (deps.curriculumEnabled) {
       // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop() through the closure
       for (let i = 1; i <= deps.maxObjectives && running; i++) {
-        let objective: string
+        let objective: string | undefined
         let context = ''
         let successCheck: SuccessCheck | undefined
 
         if (pendingRedirect) {
           objective = pendingRedirect
           pendingRedirect = null
-          logger.withFields({ objective }).log('Following a human chat redirection')
+          // A human chat command is NOT a roadmap rung — run it as open/action-as-code.
+          mode = 'open'
+          currentRung = null
+          currentIntention = null
+          logger.withFields({ objective }).log('Following a human chat redirection (open mode)')
         }
-        else {
+        else if (mode === 'roadmap') {
+          // Roadmap mode: pick the next deterministic rung — NO LLM. `selectRung` returns the first
+          // not-done rung whose precondition is ready, or null (blocked/exhausted → fall to open).
+          currentRung = null
+          currentIntention = null
+          const state = await captureState()
+          const resScan = await captureResources()
+          const sel = selectRung(ROADMAP, rungDone, { state, resources: resScan.resources })
+          if (sel.rung) {
+            currentRung = sel.rung
+            currentIntention = sel.rung.intention
+            objective = sel.rung.objective
+            context = sel.rung.context
+            successCheck = sel.rung.successCheck
+            logger.withFields({ step: i, rung: sel.rung.id, successCheck }).log('Roadmap rung (no LLM)')
+          }
+          else {
+            mode = 'open'
+            openReason = sel.reason
+            logger.withFields({ reason: sel.reason }).log('Roadmap → open mode')
+          }
+        }
+
+        // Open mode (LLM curriculum + action-as-code): reached on a human redirect, a blocked/
+        // exhausted roadmap, or after a rung failed unrecoverably. Only when no objective was set
+        // above (redirect/roadmap) — so a redirect or a roadmap rung short-circuits this.
+        if (objective === undefined && mode === 'open') {
+          currentRung = null
+          currentIntention = null
           const state = await captureState()
           // Show the curriculum the FACTORY (machines + status + what each drill mines)
           // and the production totals — without these it can't tell that nothing is
@@ -284,11 +346,25 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           // curriculum proposes the right prerequisite instead of guessing (the "missing
           // stone-furnace" wall). Only failed objectives with a target item are diagnosable.
           const failedRecipeDiagnosis: string[] = []
+          const failedPlaceDiagnosis: string[] = []
           const recentItems = [...new Set(failedDetails.map(f => f.item).filter((x): x is string => x !== undefined))].slice(-3)
           for (const item of recentItems) {
-            const diag = await diagnoseCraftFailure(item, state, deps.raw).catch(() => null)
+            // Dispatch by the failure's success-check kind: a BUILD failure (machine to place that
+            // wasn't held → stock-out) goes to diagnosePlaceFailure; an ACQUIRE/PRODUCE failure
+            // (craft rejected for a missing ingredient) goes to diagnoseCraftFailure. The two
+            // channels are disjoint by kind, so a failed machine never produces two diagnoses and
+            // the "ran out of stone-furnaces" wall (recipe satisfied, 0 held) is finally caught.
+            const kind = [...failedDetails].reverse().find(f => f.item === item)?.kind
+            const diag = kind === 'build'
+              ? await diagnosePlaceFailure(item, state, deps.raw).catch(() => null)
+              : await diagnoseCraftFailure(item, state, deps.raw).catch(() => null)
             if (diag) {
-              failedRecipeDiagnosis.push(diag)
+              if (kind === 'build') {
+                failedPlaceDiagnosis.push(diag)
+              }
+              else {
+                failedRecipeDiagnosis.push(diag)
+              }
             }
           }
           let proposed: Awaited<ReturnType<typeof proposeNextObjective>> = null
@@ -305,6 +381,7 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
               completed,
               failedDetails,
               failedRecipeDiagnosis,
+              failedPlaceDiagnosis,
               forbidObjectives: [...new Set(forbidObjectives)],
               model: deps.actionModel,
             })
@@ -328,7 +405,37 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
           logger.withFields({ step: i, objective, reasoning: proposed.reasoning, successCheck }).log('Curriculum proposed the next objective')
         }
 
-        await runOneObjective(objective, context, successCheck)
+        if (!objective) {
+          break
+        }
+        let ok = await runOneObjective(objective, context, successCheck)
+
+        // Roadmap mode bookkeeping (no-op in open mode). On failure, the deterministic diagnose
+        // decides whether a RETRY is worthwhile (the primitive is idempotent and self-repairs —
+        // e.g. automateResource re-fuels a no_fuel drill); retry up to 3 attempts before yielding
+        // to the open-mode LLM curriculum with the cause. A structural failure (diagnose: !retry)
+        // yields immediately so we don't loop a stuck rung.
+        if (mode === 'roadmap' && currentRung) {
+          let rungAttempts = 1
+          // eslint-disable-next-line no-unmodified-loop-condition -- `running` is flipped by stop()
+          while (!ok && running) {
+            const diag = diagnoseRung(currentRung, await captureScan())
+            if (!diag.retry || rungAttempts >= 3) {
+              mode = 'open'
+              openReason = `rung '${currentRung.id}' failed: ${diag.reason}`
+              failedDetails.push({ objective: currentRung.objective, critique: diag.reason ?? 'rung failed', kind: currentRung.successCheck.kind })
+              logger.withFields({ rung: currentRung.id, reason: diag.reason }).warn('Roadmap rung failed → open mode')
+              break
+            }
+            rungAttempts++
+            logger.withFields({ rung: currentRung.id, attempt: rungAttempts, reason: diag.reason }).log('Roadmap rung retry (diagnose)')
+            ok = await runOneObjective(objective, context, successCheck)
+          }
+          if (ok) {
+            rungDone.add(currentRung.id)
+            logger.withFields({ rung: currentRung.id, attempts: rungAttempts }).log('✅ Roadmap rung done (deterministic)')
+          }
+        }
       }
     }
     else {
@@ -346,7 +453,8 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
     // (completed/total, skills learned, final production counters) without a human reading logs.
     if (deps.headlessTestMode) {
       let production: Record<string, number> | null = null
-      try { production = await captureProduction() } catch { production = null }
+      try { production = await captureProduction() }
+      catch { production = null }
       const total = completed.length + failedDetails.length
       const recap = {
         completed: completed.length,
@@ -357,6 +465,12 @@ export function startLearningSession(deps: LearningSessionDeps): LearningControl
         production,
         completedObjectives: completed,
         failedObjectives: failedDetails.map(f => f.objective),
+        // Roadmap mode (Phase 1): which deterministic rungs were cleared with ZERO LLM, the final
+        // mode, and the reason we yielded to the LLM (if any). The cost win = rungsDone reached
+        // before `finalMode: 'open'`.
+        rungsDone: [...rungDone],
+        finalMode: mode,
+        openReason,
       }
       logger.withFields({ recap, context: 'headless-recap' }).log(`HEADLESS_RECAP ${JSON.stringify(recap)}`)
     }

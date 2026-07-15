@@ -1,7 +1,7 @@
 /* eslint-disable ts/naming-convention -- test fixtures use Factorio internal item names (kebab-case) and snake_case JSON keys */
 import type { GameState } from './types'
 import { describe, expect, it } from 'vitest'
-import { buildBatchedCaptureCommand, buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diagnoseCraftFailure, diffState, parseBatchedCapture, parseGameState, parseScan } from './state'
+import { buildBatchedCaptureCommand, buildCaptureStateCommand, buildPlayerResolveSnippet, buildScreenshotCommand, CAPTURE_STATE_COMMAND, diagnoseCraftFailure, diagnosePlaceFailure, diffState, parseBatchedCapture, parseGameState, parseScan } from './state'
 
 describe('diagnoseCraftFailure', () => {
   const state = (inv: Record<string, number>): GameState => ({ tick: 0, inventory: inv, entities: {} })
@@ -33,6 +33,49 @@ describe('diagnoseCraftFailure', () => {
     const raw = async (cmd: string) => { captured = cmd; return '{}' }
     await diagnoseCraftFailure("weird'name", state({}), raw)
     expect(captured).toContain("weird\\'name")
+  })
+})
+
+describe('diagnosePlaceFailure', () => {
+  const state = (inv: Record<string, number>): GameState => ({ tick: 0, inventory: inv, entities: {} })
+  // The stone-furnace recipe: 5 stone.
+  const recipe = async () => '{"recipe":{"name":"stone-furnace","ingredients":[{"name":"stone","amount":5}],"products":[{"name":"stone-furnace","amount":1}],"enabled":true,"category":"crafting"}}'
+
+  it('fires when the player holds 0 of the machine even if the recipe is SATISFIED (the ran-out-of-furnaces wall)', async () => {
+    // The player has 5 stone but 0 stone-furnace → diagnoseCraftFailure would return null
+    // (recipe satisfied), but THIS is exactly the wall: the furnace was never assembled.
+    const diag = await diagnosePlaceFailure('stone-furnace', state({ stone: 5 }), recipe)
+    expect(diag).not.toBeNull()
+    expect(diag).toContain('HOLD 0 stone-furnace')
+    expect(diag).toContain('CRAFT the stone-furnace now')
+    // No missing ingredient — the diagnosis must NOT name a MISSING block.
+    expect(diag).not.toContain('MISSING')
+  })
+
+  it('names the missing ingredient when the player holds neither the machine nor enough ingredient', async () => {
+    const diag = await diagnosePlaceFailure('stone-furnace', state({ stone: 2 }), recipe)
+    expect(diag).not.toBeNull()
+    expect(diag).toContain('HOLD 0 stone-furnace')
+    expect(diag).toContain('MISSING: stone (have 2/5)')
+  })
+
+  it('returns null when the player already holds the machine (not a stock-out)', async () => {
+    expect(await diagnosePlaceFailure('stone-furnace', state({ 'stone-furnace': 1 }), recipe)).toBeNull()
+  })
+
+  it('returns null for a raw resource with no recipe', async () => {
+    const raw = async () => '{}' // describe returns no `recipe` for a raw resource
+    expect(await diagnosePlaceFailure('iron-ore', state({}), raw)).toBeNull()
+  })
+
+  it('escapes a quote in the item name when building the RCON call', async () => {
+    let captured = ''
+    const raw = async (cmd: string) => {
+      captured = cmd
+      return '{}'
+    }
+    await diagnosePlaceFailure('weird\'name', state({}), raw)
+    expect(captured).toContain('weird\\\'name')
   })
 })
 

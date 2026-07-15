@@ -193,4 +193,56 @@ describe('evaluateSuccessCheck', () => {
     })
     expect(r.decided).toBe(false)
   })
+
+  it('status: PASSES when at least one named machine has the wanted status (post-run scan)', () => {
+    // A steam-engine was built AND is working — the 'status' kind catches a built-but-not-running
+    // machine, which a 'build' check alone would PASS on.
+    const r = evaluateSuccessCheck({ kind: 'status', entity: 'steam-engine', want: 'working', count: 1 }, {
+      objective: 'x',
+      before: state({}),
+      after: state({}),
+      scanAfter: {
+        entities: [
+          { name: 'steam-engine', type: 'generator', x: 0, y: 0, direction: 'north', status: 'working' },
+        ],
+        resources: {},
+      },
+    })
+    expect(r).toMatchObject({ decided: true, success: true })
+  })
+
+  it('status: FAILS when the machine exists but its status is not `want` (e.g. no_water)', () => {
+    const r = evaluateSuccessCheck({ kind: 'status', entity: 'steam-engine', want: 'working', count: 1 }, {
+      objective: 'x',
+      before: state({}),
+      after: state({}),
+      scanAfter: {
+        entities: [
+          { name: 'steam-engine', type: 'generator', x: 0, y: 0, direction: 'north', status: 'no_water' },
+        ],
+        resources: {},
+      },
+    })
+    expect(r).toMatchObject({ decided: true, success: false })
+    expect(r.critique).toContain('steam-engine')
+  })
+
+  it('status: FAILS when no named machine exists in the scan', () => {
+    const r = evaluateSuccessCheck({ kind: 'status', entity: 'steam-engine', want: 'working' }, {
+      objective: 'x',
+      before: state({}),
+      after: state({}),
+      scanAfter: { entities: [], resources: {} },
+    })
+    expect(r).toMatchObject({ decided: true, success: false })
+  })
+
+  it('status: defers (decided:false) when no post-run scan is available', () => {
+    const r = evaluateSuccessCheck({ kind: 'status', entity: 'steam-engine', want: 'working' }, {
+      objective: 'x',
+      before: state({}),
+      after: state({}),
+    })
+    expect(r.decided).toBe(false)
+  })
 })

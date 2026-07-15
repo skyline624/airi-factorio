@@ -565,7 +565,7 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
       if (input.includes('find_nearest')) {
         return '{"name":"copper-ore","x":40,"y":-10,"distance":30}'
       }
-      if (input.includes('scan_area')) {
+      if (input.includes('scan_area') || input.includes('scan_factory')) {
         return '{"origin":{"x":0,"y":0},"radius":32,"entities":[{"name":"burner-mining-drill","type":"mining-drill","x":41,"y":-11,"direction":"north","status":"waiting_for_space_in_destination","mining":"copper-ore"}],"resources":{}}'
       }
       if (input.includes('place_furnace_at_drill')) {
@@ -603,6 +603,7 @@ function makeMockOps(): Ops {
     craftAll: ok,
     ensure: ok,
     fuel: ok,
+    fuelAt: ok,
     collectOutput: ok,
     launchRocket: ok,
     buildSteamPower: async () => ({ ok: true }),
@@ -613,6 +614,7 @@ function makeMockOps(): Ops {
     skill: ok,
     placeAt: ok,
     scan: async () => ({ entities: [], resources: {} }),
+    scanFactory: async () => ({ entities: [], resources: {} }),
     renderMap: async () => null,
     getRecipe: async () => null,
     describeEntity: async () => null,
@@ -623,6 +625,7 @@ function makeMockOps(): Ops {
     placeFurnaceAtDrill: async () => ({ ok: true }),
     placeChestAtDrill: async () => ({ ok: true }),
     automateResource: ok,
+    bootstrap: ok,
     placeBeltLine: async () => ({ ok: true }),
     placeInserterBetween: async () => ({ ok: true }),
     connect: async () => ({ ok: true }),

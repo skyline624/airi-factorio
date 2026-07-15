@@ -143,6 +143,46 @@ export async function diagnoseCraftFailure(item: string, state: GameState, raw: 
   return `EXACT recipe for '${item}': ${ingredients.map(i => `${i.amount}×${i.name}`).join(' + ')}. You hold: ${held.join(', ')}. MISSING: ${missing.join(', ')}. => Acquire the missing item(s) FIRST (craft if craftable, smelt in a furnace if it's a plate, mine if it's ore) — do NOT re-propose crafting '${item}' until you hold every ingredient.`
 }
 
+/**
+ * Diagnose a PLACE failure where the agent tried to BUILD/PLACE a machine it does not HOLD.
+ * Complement to diagnoseCraftFailure: that one fires when a CRAFT was rejected for a missing
+ * INGREDIENT (and returns null when the recipe is satisfied — which is exactly the blind spot).
+ * This one fires when the machine is simply ABSENT from the inventory (0 held): the
+ * "ran out of stone-furnaces" wall, where the player HAS the stone but never assembled the
+ * furnace, so placing it on the drill output is rejected and iron-plate stays at 0 while the
+ * drill keeps mining. diagnoseCraftFailure misses this (the furnace recipe IS satisfied), so
+ * the curriculum guesses.
+ *
+ * Returns null when `item` has no recipe (a raw ore, not a craftable machine) OR the player
+ * already holds some (not a stock-out — the place failed for another reason) — so the
+ * curriculum only gets a diagnosis when the fix is "craft the machine now".
+ */
+export async function diagnosePlaceFailure(item: string, state: GameState, raw: (input: string) => Promise<string>): Promise<string | null> {
+  const safe = item.replace(/'/g, "\\'")
+  const d = extractLastJsonLine<{ recipe?: { ingredients?: Array<{ name: string, amount: number }> } }>(await raw(`/c remote.call('autorio_tools','describe','${safe}')`))
+  const ingredients = d?.recipe?.ingredients
+  if (!ingredients || ingredients.length === 0) {
+    return null // not a craftable machine — no actionable "craft it" diagnosis from this channel
+  }
+  const inv = state.inventory ?? {}
+  if ((inv[item] ?? 0) > 0) {
+    return null // the player already holds the machine — the place failure wasn't a stock-out
+  }
+  const held: string[] = []
+  const missing: string[] = []
+  for (const ing of ingredients) {
+    const have = inv[ing.name] ?? 0
+    held.push(`${ing.name} ${have}/${ing.amount}`)
+    if (have < ing.amount) {
+      missing.push(`${ing.name} (have ${have}/${ing.amount})`)
+    }
+  }
+  const tail = missing.length
+    ? `MISSING: ${missing.join(', ')}. Acquire the missing ingredient(s) FIRST (mine if it's ore, smelt in a furnace if it's a plate), THEN craft the ${item}.`
+    : `All ingredients are present — CRAFT the ${item} now, THEN place it.`
+  return `PLACE FAILURE on '${item}': you HOLD 0 ${item} (the place was rejected for an empty inventory — you used your last one on a previous line). You must CRAFT a ${item} before you can place it. Recipe: ${ingredients.map(i => `${i.amount}×${i.name}`).join(' + ')}. You hold: ${held.join(', ')}. ${tail}`
+}
+
 function diffRecord(before: Record<string, number>, after: Record<string, number>): { gained: string[], lost: string[] } {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
   const gained: string[] = []

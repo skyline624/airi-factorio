@@ -47,14 +47,16 @@ export interface Verdict {
  * producing, an entity built, a tech researched), so we don't ask an LLM to guess.
  */
 export interface SuccessCheck {
-  /** how completion is proven from state: 'acquire' (item gained in inventory/production), 'produce' (force production counter for the item rises — the throughput signal that a machine actually WORKS), 'build' (a new entity exists), 'research' (a technology completes). */
-  kind: 'acquire' | 'produce' | 'build' | 'research'
+  /** how completion is proven from state: 'acquire' (item gained in inventory/production), 'produce' (force production counter for the item rises — the throughput signal that a machine actually WORKS), 'build' (a new entity exists), 'research' (a technology completes), 'status' (a named machine's post-run status matches `want` — e.g. steam-engine 'working' — read from the scan, used by the deterministic roadmap when a build check alone would PASS on a built-but-not-running machine). */
+  kind: 'acquire' | 'produce' | 'build' | 'research' | 'status'
   /** acquire/produce: the Factorio item name, e.g. 'iron-plate'. */
   item?: string
-  /** build: the Factorio entity name, e.g. 'stone-furnace'. */
+  /** build/status: the Factorio entity name, e.g. 'stone-furnace' / 'steam-engine'. */
   entity?: string
   /** required amount gained/produced/built (default 1). */
   count?: number
+  /** status: the desired machine status string (e.g. 'working', 'no_power', 'no_fuel'). PASS when at least one named entity has this status in the post-run scan. */
+  want?: string
 }
 
 /** A learned skill: LLM-generated code plus metadata. (Consumed from step 4 on.) */
@@ -234,6 +236,8 @@ export interface Ops {
   getState: () => Promise<GameState>
   /** Structured spatial scan: nearby entities (position/direction/status) + resource patches. */
   scan: (radius?: number) => Promise<ScanResult>
+  /** Force-wide census of the player's OWN machines (drills/furnaces/assemblers/belts/inserters/containers with status/mining/recipe) — NOT player-centred, so it sees machines anywhere on the surface. Use this for idempotency: a `scan(radius)` centred on the player misses a placed drill once the player drifts off-patch. */
+  scanFactory: () => Promise<ScanResult>
   /** ASCII minimap centred on `center` (defaults to your character). Top row = x ruler (a label every 5 columns); each other row is prefixed by its EXACT y. Read footprints (a 2x2 machine fills 2x2 cells), adjacency and belt/inserter orientation (^>v<) straight off the grid, then place with `placeAt` using the EXACT coordinates shown. Null on failure. */
   renderMap: (radius?: number, center?: { x: number, y: number }) => Promise<MapView | null>
   /** Look up the EXACT recipe for an item/machine (ingredients + products). Null if unknown/no recipe. Use this instead of guessing recipes. */
@@ -268,6 +272,8 @@ export interface Ops {
   placeChestAtDrill: (chestName?: string) => Promise<OpResult>
   /** AUTOMATE a raw resource in ONE call: walk to it → place a drill → add the RIGHT output (a FURNACE for smeltable ore iron-ore/copper-ore, else a CHEST for coal/stone) → fuel the drill (and furnace). Use this for EVERY raw resource instead of hand-mining. **Automate COAL early with `automateResource('coal')`** — coal fuels every burner machine; hand-mining it forever is why the factory stalls. e.g. `automateResource('iron-ore')`, `automateResource('coal')`. Returns `{ok, data:{resource, output:'furnace'|'chest', mining}}`. */
   automateResource: (resource: string, drillName?: string) => Promise<OpResult>
+  /** Hand-bootstrap the factory from an EMPTY inventory so the automation primitives can take over: mine 10 iron-ore + 10 stone + 10 coal, smelt 5 iron-plate, craft 2 iron-gear-wheel + 1 burner-mining-drill + a spare stone-furnace. Needed because `automateResource('iron-ore')` can't start from scratch (it calls `ensure('burner-mining-drill')` → `craftAll('iron-plate')`, and iron-plate is SMELTED not crafted). The first roadmap rung. Returns `{ok, data:{ironPlate}}`. */
+  bootstrap: () => Promise<OpResult>
   /** Lay a straight L-shaped line of ALIGNED belts from one tile to another (the mod snaps to tile centres + orients each belt toward the flow). Reuses belts already on the path. Returns `{ok, data:{placed, reused, blocked:[{x,y}]}}`; `ok` false if any tile was blocked — mine the obstacle / pick a clear path and retry. e.g. `placeBeltLine(10,4,10,12)`. */
   placeBeltLine: (startX: number, startY: number, endX: number, endY: number, beltName?: string) => Promise<OpResult>
   /** Place a correctly-ORIENTED inserter between two machines so items flow `from` -> `to` (the mod computes the tile + facing). `inserterName` defaults to 'burner-inserter' (needs coal, no power). e.g. furnace plates onto a belt: `placeInserterBetween('stone-furnace','transport-belt')`. PREFER this over placeAt for inserters. */
@@ -288,6 +294,8 @@ export interface Ops {
   ensure: (item: string, count?: number) => Promise<OpResult>
   /** Fuel a machine in ONE call: guarantees you hold the fuel (obtains it if not), walks to the nearest `entityName`, and loads `amount` of `item` (default coal ×5). Replaces the walk-then-moveItems dance that kept failing "out of reach". e.g. `fuel('stone-furnace')`, `fuel('burner-mining-drill', 'coal', 10)`. */
   fuel: (entityName: string, item?: string, amount?: number) => Promise<OpResult>
+  /** Fuel the SPECIFIC machine at `at` — NOT the nearest. Use after placing a drill/furnace when another same-name machine is within 32 tiles: `move_items` (radius 32, no distance priority) would SPLIT the fuel across both (the new machine got 0 and the rung stalled). Walks to the target, then steps away from the nearest OTHER same-name machine so only the target is within 32, then loads `amount` of `item` (default coal ×5). e.g. `fuelAt('burner-mining-drill', {x,y})`. */
+  fuelAt: (entityName: string, at: { x: number, y: number }, item?: string, amount?: number) => Promise<OpResult>
   /** Walk to the nearest `entityName` and empty its OUTPUT into your inventory (clears a `full_output` machine). Omit `item` to auto-detect what's in its output slots. e.g. `collectOutput('stone-furnace')` to grab smelted plates. */
   collectOutput: (entityName: string, item?: string) => Promise<OpResult>
   /** Launch the nearest rocket-silo's finished rocket (within 60 tiles). The silo must already HOLD a completed rocket — give it the rocket-part recipe + ingredients (it assembles automatically) and wait first. `{ok:false}` with `rocketParts` count if no rocket is ready. */

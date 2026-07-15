@@ -1562,23 +1562,42 @@ function run_test_mode_step(player: LuaPlayer): boolean {
       task_manager.reset_task_state(); task_manager.next_task(); return true
     }
     let goal: MapPositionStruct | null | undefined = p.final_goal ?? p.goal_position ?? p.target_position
+    let target: LuaEntity | null | undefined
     if (goal === undefined || goal === null) {
-      // No staged target yet (pathfinding never ran) — resolve the nearest matching entity.
+      // No staged target yet (pathfinding never ran — in test mode the handler is intercepted at the
+      // first tick, so these staged fields stay null). Resolve the nearest matching entity AND keep
+      // the entity itself (not just its position) so we can teleport ADJACENT to a machine below.
       const filter = prototypes.entity[p.entity_name] !== undefined
         ? { position: player.position, radius: p.search_radius, name: p.entity_name }
         : { position: player.position, radius: p.search_radius, type: p.entity_name }
       const found = surface.find_entities_filtered(filter)
-      goal = found.length > 0 ? (get_nearest_entity(player, found)?.position ?? null) : null
+      target = get_nearest_entity(player, found)
+      goal = target?.position ?? null
     }
     if (goal !== null && goal !== undefined) {
-      // Teleport DIRECTLY onto the target tile. The previous find_non_colliding_position
-      // (radius 8) landed the player OFF a resource patch, so a subsequent mineEntity
-      // (radius 5) found only 1-2 tiles and under-yielded (the "hold 1/15" mine wall). For a
-      // resource the target tile is walkable (no collision), so teleporting onto it puts the
-      // player on the patch → radius-5 mine sees the whole cluster. teleport() ignores
-      // collision, so this is safe for a machine target too.
-      player.teleport(goal)
-      log(`[AUTORIO] [test_mode] walked (teleport) to ${serpent.line(goal)}`)
+      // For a RESOURCE (walkable tile, no collision box) teleport ONTO it — the mine under-yield
+      // fix (commit 628ead5): a radius-5 mineEntity must land ON the patch to see the whole cluster.
+      // For a MACHINE (collision box) teleport onto a FREE tile ADJACENT — player.teleport() onto a
+      // collision tile silently FAILS for a character-less player (player.position stays put), so the
+      // subsequent move_items radius-32 search finds nothing → "No coal moved" → the #1 fuel test-mode
+      // wall. find_non_colliding_position lands on a walkable tile within `radius` of the machine,
+      // well inside the move_items radius-32 reach.
+      let tp: MapPositionStruct = goal
+      if (target && target.type !== 'resource') {
+        const free = surface.find_non_colliding_position('character', goal, 8, 0.5)
+        if (free) {
+          tp = free
+        }
+      }
+      const ok = player.teleport(tp)
+      if (!ok) {
+        // The adjacent tile was also blocked (rare): retry with a wider search before giving up.
+        const free = surface.find_non_colliding_position('character', goal, 16, 1)
+        if (free) {
+          player.teleport(free)
+        }
+      }
+      log(`[AUTORIO] [test_mode] walked (teleport) to ${serpent.line(tp)}${target && target.type !== 'resource' ? ' (adjacent to machine)' : ' (onto resource)'}`)
     }
     else {
       log(`[AUTORIO] [ERROR] [test_mode] no ${p.entity_name} within ${p.search_radius} to walk to`)
@@ -1611,9 +1630,12 @@ function run_test_mode_step(player: LuaPlayer): boolean {
     try {
       for (let i = 0; i < target; i++) {
         if (p.count > 0 && inv.get_item_count(mine_name) >= p.count) break
+        // radius 12 (not 5): the player is teleported onto the NEAREST resource entity (the edge of
+        // the patch, see run_test_mode_step WALKING_TO_ENTITY), so radius 5 only sees the patch edge
+        // (a few tiles) and under-yields ("only 5/10 coal"). 12 covers the whole patch from the edge.
         const filter = prototypes.entity[mine_name] !== undefined
-          ? { position: player.position, radius: 5, name: mine_name }
-          : { position: player.position, radius: 5, type: mine_name }
+          ? { position: player.position, radius: 12, name: mine_name }
+          : { position: player.position, radius: 12, type: mine_name }
         const found = surface.find_entities_filtered(filter)
         if (found.length === 0) break
         const e = get_nearest_entity(player, found)

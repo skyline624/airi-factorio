@@ -20,6 +20,8 @@ export interface CurriculumInput {
   failedDetails: { objective: string, critique: string }[]
   /** EXACT recipe diagnosis for recently-failed crafts (from the game's recipe graph via getRecipe): the real recipe + which ingredient the player is short of. Lets the curriculum propose the right prerequisite instead of guessing (e.g. "missing 1 stone-furnace" → propose crafting a furnace, not "more gears"). */
   failedRecipeDiagnosis?: string[]
+  /** EXACT place diagnosis for recently-failed BUILDS (machine to place that the player held 0 of — the "ran out of stone-furnaces" wall): names the machine, states the player holds none, gives its recipe + whether the ingredients are present. Lets the curriculum propose "craft the machine" instead of re-proposing the place. */
+  failedPlaceDiagnosis?: string[]
   /** Objectives that failed repeatedly — the curriculum MUST NOT re-propose any of them (loop breaker). */
   forbidObjectives?: string[]
   model: string
@@ -151,6 +153,12 @@ function buildMessage(input: CurriculumInput): string {
   if (input.failedRecipeDiagnosis && input.failedRecipeDiagnosis.length) {
     lines.push('', 'EXACT RECIPE DIAGNOSIS for recently-failed crafts (read from the GAME\'s recipe graph — do NOT guess): the MISSING item below IS your next objective. Acquire it first (craft if craftable, smelt in a furnace if it\'s a plate, mine if it\'s ore), THEN retry the failed craft.')
     for (const d of input.failedRecipeDiagnosis) {
+      lines.push(`- ${d}`)
+    }
+  }
+  if (input.failedPlaceDiagnosis && input.failedPlaceDiagnosis.length) {
+    lines.push('', 'EXACT PLACE DIAGNOSIS for recently-failed BUILDS (do NOT guess): the machine below was REJECTED because the player holds 0 of it. Your next objective is to CRAFT that machine first (or first acquire a missing ingredient it names), THEN re-attempt the place. Re-proposing the place while you still hold 0 of the machine is FORBIDDEN.')
+    for (const d of input.failedPlaceDiagnosis) {
       lines.push(`- ${d}`)
     }
   }

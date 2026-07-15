@@ -136,7 +136,13 @@ export function new_task_manager() {
 
   function cancel_all_tasks() {
     reset_task_state()
-    storage.task_queue.length = 0 // can use this to clear the array in lua
+    // Reassign a FRESH empty table. `length = 0` does NOT clear a Lua table — the integer-keyed
+    // entries [1],[2],… survive (Lua tables are dicts, `t.length = 0` just sets a `length` field).
+    // So the old code never actually emptied the queue: stale tasks from a previous run (persisted
+    // in the save) survived `cancel_all_tasks`, kept being processed by on_tick after a reset, and
+    // contaminated the next run's first op with a stray settle (the "no stone-furnace within 50
+    // to walk to" wall). A new table drops every queued task for real.
+    storage.task_queue = []
   }
 
   return {
