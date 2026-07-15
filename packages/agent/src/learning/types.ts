@@ -285,6 +285,8 @@ export interface Ops {
   /** Place `entity` on a free tile ADJACENT to the nearest `targetName` machine (the mod finds the spot — don't compute coords). e.g. `placeNextTo('assembling-machine-1','iron-chest')`, `placeNextTo('lab','small-electric-pole')`. Returns `{ok, data:{x,y,status}}`. */
   placeNextTo: (entity: string, targetName: string, side?: string) => Promise<OpResult>
   moveItems: (args: { item: string, entity: string, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
+  /** Move items to/from the SPECIFIC `entity` at `at` (x,y) — not every same-name entity within radius 32. Use when a neighbouring same-name machine would otherwise split the load (e.g. fuelling a just-placed coal drill while the iron drill is within 32 tiles). `toEntity:true` loads the item INTO the machine from the inventory; `false` pulls the machine's output into the inventory. */
+  moveItemsAt: (args: { item: string, entity: string, at: { x: number, y: number }, maxCount?: number, toEntity?: boolean }) => Promise<OpResult>
   craftItem: (recipe: string, count?: number) => Promise<OpResult>
   /** Set the recipe of the nearest crafting machine within 20 tiles — assembler, chemical-plant OR oil-refinery (all entity-type 'assembling-machine'). It produces NOTHING without one (and needs ELECTRICITY). Place the machine, walk to it, then `setRecipe('iron-gear-wheel')` / `setRecipe('sulfuric-acid')`. This is how you AUTOMATE an intermediate or fluid product. */
   setRecipe: (recipe: string) => Promise<OpResult>

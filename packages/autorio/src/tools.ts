@@ -928,29 +928,37 @@ export function create_tools_remote_interface() {
       }
       const drop = drill.drop_position
       const dc = drill.position
-      // The drill feeds whatever occupies the drop TILE (not the exact drop point). Test
-      // coverage at the tile CENTRE — a furnace's collision box is inset, so the exact
-      // drop point can sit just outside it even when the furnace correctly covers the tile.
-      const dtx = math.floor(drop.x) + 0.5
-      const dty = math.floor(drop.y) + 0.5
+      // The drill drops ore at the EXACT drop_position. For the furnace to RECEIVE it (not drop the
+      // ore on the ground), the furnace's COLLISION BOX must cover that exact point — a 2x2 furnace's
+      // box is inset (~0.7 half-width from its centre), so a furnace that covers the drop TILE
+      // centre can still MISS the exact drop point when it sits near the tile edge (observed: drop
+      // y=22.703, furnace bbox right_bottom y=22.7 → ore landed on the ground → 0 plates). So test
+      // coverage at the EXACT drop point, and only keep candidate centres whose inset bbox reaches it.
+      const dpx = drop.x
+      const dpy = drop.y
 
       function covers(box: BoundingBox, px: number, py: number): boolean {
         return px >= box.left_top.x && px <= box.right_bottom.x && py >= box.left_top.y && py <= box.right_bottom.y
       }
 
-      // Idempotent: a furnace already covering the drop tile means the feed is set.
+      // Idempotent: a furnace already covering the EXACT drop point means the feed is set. (A
+      // furnace covering only the tile centre but not the exact drop is MISPLACED — it doesn't feed
+      // — so don't treat it as "already on output"; it'll be reclaimed below.)
       for (const f of surface.find_entities_filtered({ position: drop, radius: 1.5, type: 'furnace' })) {
-        if (covers(f.bounding_box, dtx, dty)) {
+        if (covers(f.bounding_box, dpx, dpy)) {
           rcon.print(helpers.table_to_json({ ok: true, furnace: f.name, x: math.floor(f.position.x * 10) / 10, y: math.floor(f.position.y * 10) / 10, note: 'already on the drill output' }))
           return true
         }
       }
 
-      // Candidate 2x2 furnace centres whose footprint covers the drop tile.
+      // Candidate 2x2 furnace centres whose INSET collision box covers the EXACT drop point. The box
+      // half-width is ~0.7 (inset 0.3 from the 1.0 tile half extent), so require |drop - centre| <
+      // 0.7 on each axis. The earlier `>= 1` (tile coverage) kept centres that cover the tile but
+      // miss the exact drop near the edge → the drill dropped ore on the ground.
       const candidates: Array<{ x: number, y: number }> = []
       for (const cx of [math.floor(drop.x), math.ceil(drop.x)]) {
         for (const cy of [math.floor(drop.y), math.ceil(drop.y)]) {
-          if (math.abs(drop.x - cx) >= 1 || math.abs(drop.y - cy) >= 1) {
+          if (math.abs(drop.x - cx) >= 0.7 || math.abs(drop.y - cy) >= 0.7) {
             continue
           }
           candidates.push({ x: cx, y: cy })
@@ -1018,9 +1026,9 @@ export function create_tools_remote_interface() {
         rcon.print(helpers.table_to_json({ ok: false, error: 'create_entity failed' }))
         return false
       }
-      if (!covers(ent.bounding_box, dtx, dty)) {
+      if (!covers(ent.bounding_box, dpx, dpy)) {
         ent.destroy()
-        rcon.print(helpers.table_to_json({ ok: false, error: 'placed furnace did not cover the drill output' }))
+        rcon.print(helpers.table_to_json({ ok: false, error: 'placed furnace did not cover the drill output (exact drop point)' }))
         return false
       }
 

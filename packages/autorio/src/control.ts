@@ -235,6 +235,29 @@ remote.add_interface('autorio_operations', {
 
     return [true, 'Task started']
   },
+  // Target the SPECIFIC entity at (x, y) — not every same-name entity within radius 32 of the
+  // player. `move_items` (above) splits the load across all matches, so fuelling a just-placed
+  // coal drill while the iron drill is within 32 gave the coal drill 0. This targets only the
+  // entity at (x, y) (radius 1.5, filtered by name), so the load goes to exactly that machine.
+  move_items_at: (item_name: string, entity_name: string, x: number, y: number, max_count: number, to_entity: boolean): [boolean, string] => {
+    task_manager.add_task({
+      type: TaskStates.MOVING_ITEMS,
+      item_name,
+      entity_name,
+      max_count: max_count || math.huge,
+      to_entity,
+      position: { x, y },
+    })
+
+    if (to_entity) {
+      log(`[AUTORIO] New move_items_at task for ${item_name} to ${entity_name} at (${x},${y})`)
+    }
+    else {
+      log(`[AUTORIO] New move_items_at task for ${item_name} from ${entity_name} at (${x},${y})`)
+    }
+
+    return [true, 'Task started']
+  },
   wait: (ticks: number): [boolean, string] => {
     task_manager.add_task({
       type: TaskStates.WAITING,
@@ -1185,12 +1208,24 @@ function state_moving_items(player: LuaPlayer) {
   // made fueling fail "out of reach" whenever the agent had drifted a few tiles
   // after building. Widen it so the just-built machine is still found. (Capped at
   // max_count total, so it tops up the nearest matching machines, not the whole base.)
-  const nearby_entities = player.surface.find_entities_filtered({
-    position: player.position,
-    radius: 32,
-    name: parameters.entity_name,
-    force: player.force,
-  })
+  //
+  // When `parameters.position` is set (move_items_at), target the SINGLE entity at that
+  // position (radius 1.5, by name) — NOT every same-name entity within radius 32 of the
+  // player. That avoids the load SPLIT across neighbouring machines of the same type (the
+  // coal-drill-gets-0-while-the-iron-drill-is-within-32 wall).
+  const nearby_entities = parameters.position !== undefined
+    ? player.surface.find_entities_filtered({
+      position: parameters.position,
+      radius: 1.5,
+      name: parameters.entity_name,
+      force: player.force,
+    })
+    : player.surface.find_entities_filtered({
+      position: player.position,
+      radius: 32,
+      name: parameters.entity_name,
+      force: player.force,
+    })
 
   const player_inventory = player.get_main_inventory()
   if (!player_inventory) {

@@ -158,8 +158,10 @@ export async function attemptObjective(objective: string, context: string, deps:
     // deterministic dispatcher throws "bootstrap: could not fuel..." / "automateResource: ...").
     // Without this the throw is swallowed by the sandbox and the only visible signal is the
     // successCheck FAIL ("hold 0"), which says WHAT didn't happen but not WHY. Also surface the
-    // skill's own ops.log trace (the bootstrap logs furnace fuel/input/output at each step) so the
-    // exact failing step is visible in the agent log on a failed run.
+    // skill's own ops.log trace (the bootstrap logs furnace fuel/input/output, automateResource's
+    // production poll, etc.) so the exact failing step is visible — on a run error AND (see below)
+    // on a successCheck FAIL, since a timed-out poll returns ok:true but its trace shows WHY the
+    // check failed (e.g. "poll N coal produced=0").
     if (!result.ok) {
       if (result.error) {
         deps.log?.(`  -> run error: ${result.error}`)
@@ -211,6 +213,12 @@ export async function attemptObjective(objective: string, context: string, deps:
     if (verdict.success) {
       deps.log?.(`  -> verified success in ${attempt} attempt(s)`)
       return { success: true, code, raw, attempts: attempt, logs, verdict }
+    }
+    // The run succeeded (ok:true) but the successCheck FAILed — e.g. a production poll that timed
+    // out. Surface the skill's ops.log trace (the poll values) so WHY the check failed is visible,
+    // not just THAT it failed.
+    if (result.ok && logs.length) {
+      deps.log?.(`  -> skill logs: ${logs.join(' | ')}`)
     }
 
     current = after

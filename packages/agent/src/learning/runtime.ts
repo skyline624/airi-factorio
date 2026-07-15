@@ -36,7 +36,7 @@ export function luaArg(value: unknown): string {
 // Operations that enqueue a task and therefore emit a settle signal when done.
 // `research_technology` does NOT enqueue a task (it would never settle), and
 // `craft_item` only settles when it returns success (it can reject synchronously).
-const SETTLING_OPS = new Set(['walk_to_entity', 'walk_to_position', 'mine_entity', 'place_entity_at', 'move_items', 'wait', 'attack_nearest_enemy', 'craft_item'])
+const SETTLING_OPS = new Set(['walk_to_entity', 'walk_to_position', 'mine_entity', 'place_entity_at', 'move_items', 'move_items_at', 'wait', 'attack_nearest_enemy', 'craft_item'])
 
 /**
  * Per-session memo of the game's STATIC knowledge lookups, so the same recipe /
@@ -293,8 +293,8 @@ export function createOps(deps: OpsDeps): Ops {
     },
     placeFurnaceAtDrill: async (furnaceName = 'stone-furnace'): Promise<OpResult> => {
       bumpOpCount()
-      const d = extractLastJsonLine<{ ok?: boolean, error?: string, reclaimed?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_furnace_at_drill',${luaArg(furnaceName)})`))
-      return (d && d.ok === true) ? { ok: true, data: { reclaimed: d.reclaimed ?? 0 } } : { ok: false, error: (d && d.error) ? d.error : 'place_furnace_at_drill failed' }
+      const d = extractLastJsonLine<{ ok?: boolean, error?: string, reclaimed?: number, x?: number, y?: number }>(await deps.raw(`/c remote.call('autorio_tools','place_furnace_at_drill',${luaArg(furnaceName)})`))
+      return (d && d.ok === true) ? { ok: true, data: { reclaimed: d.reclaimed ?? 0, x: d.x, y: d.y } } : { ok: false, error: (d && d.error) ? d.error : 'place_furnace_at_drill failed' }
     },
     placeChestAtDrill: async (chestName = 'wooden-chest'): Promise<OpResult> => {
       bumpOpCount()
@@ -346,6 +346,7 @@ export function createOps(deps: OpsDeps): Ops {
       return (d && d.ok === true) ? { ok: true, data: { x: d.x, y: d.y, status: d.status } } : { ok: false, error: (d && d.error) ? d.error : 'place_next_to failed' }
     },
     moveItems: ({ item, entity, maxCount = 999, toEntity = true }) => runOp('move_items', [item, entity, maxCount, toEntity]),
+    moveItemsAt: ({ item, entity, at, maxCount = 999, toEntity = true }) => runOp('move_items_at', [item, entity, at.x, at.y, maxCount, toEntity]),
     craftItem: (recipe, count = 1) => runOp('craft_item', [recipe, count]),
     setRecipe: async (recipe: string): Promise<OpResult> => {
       bumpOpCount()
@@ -448,13 +449,14 @@ export function createOps(deps: OpsDeps): Ops {
       return { ok: true }
     },
     fuelAt: async (entityName: string, at: { x: number, y: number }, item = 'coal', amount = 5): Promise<OpResult> => {
-      // Fuel the SPECIFIC machine at `at` (the one just placed), not the nearest. `move_items` is
+      // Fuel the SPECIFIC machine at `at` (the one just placed), not the nearest. `moveItems` is
       // player-centred radius 32 with NO distance priority — it iterates same-name machines in
       // spatial order and caps the load TOTAL, so when a second same-name machine is within 32 (e.g.
       // the iron drill while fuelling the just-placed coal drill, ~24 tiles away) the fuel SPLIT
-      // across both and the new machine got 0 → the rung stalled ("produce coal +0"). Walk to the
-      // target, then step AWAY from the nearest other same-name machine so only the target is within
-      // the 32-tile search, then moveItems.
+      // across both and the new machine got 0 → the rung stalled ("produce coal +0"). The mod-side
+      // `moveItemsAt` targets the entity AT (x,y) (radius 1.5, by name) — only that machine, so no
+      // split. (Item moves use the script inventory API, which ignores reach, so the player doesn't
+      // even need to be near — but we walk there anyway for sanity.)
       const have = (await ops.getState()).inventory[item] ?? 0
       if (have < amount) {
         const got = await ops.ensure(item, amount)
@@ -463,39 +465,7 @@ export function createOps(deps: OpsDeps): Ops {
         }
       }
       await ops.walkTo(at.x, at.y)
-      // Exclude other same-name machines from the radius-32 search by walking the player past the
-      // 32-tile boundary that separates the target from its nearest neighbour.
-      const scan = await ops.scanFactory()
-      const others = scan.entities.filter(e => e.name === entityName && (Math.abs(e.x - at.x) > 0.5 || Math.abs(e.y - at.y) > 0.5))
-      if (others.length > 0) {
-        let nearest = others[0]
-        let nd = Infinity
-        for (const o of others) {
-          const d = (o.x - at.x) ** 2 + (o.y - at.y) ** 2
-          if (d < nd) {
-            nd = d
-            nearest = o
-          }
-        }
-        const otherDist = Math.sqrt(nd)
-        if (otherDist < 32) {
-          // Direction from the other machine toward the target (walk the player that way to leave
-          // the other behind the 32 boundary). Walk far enough that the OTHER's bounding box (a 2x2
-          // drill/furnace adds ~1 tile) is >32 from the player (otherDist + walkDist > 33), but stay
-          // <32 from the target so moveItems still finds it (walkDist < 32). 14 was too short (coal
-          // drill 12 from the iron drill → the iron's 2x2 box at distance 33 was still swept → split
-          // gave the coal drill only ~2 coal → it mined 2 then ran out → "produced coal +2"). Use
-          // 38 - otherDist for a clear margin; cap at 30 so the target stays within 32.
-          const walkDist = Math.min(30, Math.max(14, 38 - otherDist))
-          const dx = at.x - nearest.x
-          const dy = at.y - nearest.y
-          const len = Math.hypot(dx, dy) || 1
-          const px = Math.round(at.x + (dx / len) * walkDist)
-          const py = Math.round(at.y + (dy / len) * walkDist)
-          await ops.walkTo(px, py)
-        }
-      }
-      const moved = await ops.moveItems({ item, entity: entityName, maxCount: amount, toEntity: true })
+      const moved = await ops.moveItemsAt({ item, entity: entityName, at, maxCount: amount, toEntity: true })
       if (!moved.ok) {
         return { ok: false, error: `fuelAt: could not load '${item}' into '${entityName}' at (${at.x},${at.y}): ${moved.error}` }
       }
@@ -607,8 +577,8 @@ export function createOps(deps: OpsDeps): Ops {
       // next rung can collectOutput). A raw rung (coal/stone) just verifies the drill produces, so
       // target=3. 60×60 ticks ≈ 60 s for smeltable; 45×60 for raw. If the chain can't reach the
       // target in time, the rung still PASSES at +3 (the successCheck floor).
-      const pollTarget = plate ? 6 : 3
-      const pollIters = plate ? 60 : 45
+      const pollTarget = plate ? 18 : 3
+      const pollIters = plate ? 90 : 45
       const waitForOutput = async (): Promise<void> => {
         for (let i = 0; i < pollIters; i++) {
           await ops.wait(60)
@@ -622,13 +592,22 @@ export function createOps(deps: OpsDeps): Ops {
         }
         ops.log(`automateResource(${resource}): poll timed out — ${produceItem} reached ${await producedNow()} (baseline ${prodStart}, need +${pollTarget})`)
       }
-      // FUEL UP FRONT: 15 coal so a smeltable rung can fuel its drill (5) AND its furnace (10). The
-      // furnace burns ~1.1 plate/coal (measured), so 10 coal smelts ~12 plates — enough for the
-      // next rung's drill (9 plates) + margin. A raw rung only fuels its drill (5), so 15 is plenty.
-      if (((await ops.getState()).inventory['coal'] ?? 0) < 15) {
-        const gotCoal = await ops.ensure('coal', 15)
+      // FUEL UP FRONT: 30 coal so a smeltable rung can fuel its drill (5) AND its furnace (25). The
+      // furnace burns ~1.1 plate/coal (measured), so 25 coal smelts ~28 plates — enough for the
+      // NEXT rungs' drills (9 plates each) AND a coal/chest rung's iron-chest (8 plates): the coal
+      // rung needs 9 (drill) + 8 (chest) = 17 plates, the copper rung another 9. A raw rung only
+      // fuels its drill (5), so 30 is plenty.
+      // Once the COAL rung has placed a coal drill, hand-mining coal is REFUSED by the mod's
+      // anti-drill guard ("a player mining-drill covers 'coal' — collect from its output"). So
+      // prefer COLLECTING coal from the coal drill's chest (an iron-chest) before falling back to
+      // hand-mining (the first rung has no coal chest yet).
+      if (((await ops.getState()).inventory['coal'] ?? 0) < 30) {
+        await ops.collectOutput('iron-chest', 'coal').catch(() => {})
+      }
+      if (((await ops.getState()).inventory['coal'] ?? 0) < 30) {
+        const gotCoal = await ops.ensure('coal', 30)
         if (!gotCoal.ok) {
-          return { ok: false, error: `automateResource: could not bootstrap 15 coal for fuel (a bare coal patch with no drill on it is needed): ${gotCoal.error}` }
+          return { ok: false, error: `automateResource: could not bootstrap 30 coal for fuel (a bare coal patch with no drill on it is needed): ${gotCoal.error}` }
         }
       }
 
@@ -676,7 +655,7 @@ export function createOps(deps: OpsDeps): Ops {
           await ops.fuelAt('burner-mining-drill', { x: d.x, y: d.y }, 'coal', 5).catch(() => {})
         }
         if (plate) {
-          await ops.fuel('stone-furnace', 'coal', 10 * existing.length)
+          await ops.fuel('stone-furnace', 'coal', 25 * existing.length)
         }
         await waitForOutput()
         return { ok: true, data: { resource, repaired: existing.length, output: plate ? 'furnace' : 'chest' } }
@@ -694,16 +673,23 @@ export function createOps(deps: OpsDeps): Ops {
       // Skipped when a drill is already held (the bootstrap rung holds the drill it just crafted).
       const preBuild = (await ops.getState()).inventory
       if ((preBuild[drillName] ?? 0) < 1) {
-        if ((preBuild['iron-plate'] ?? 0) < 9) {
-          // Pull iron-plate from the existing iron chain's furnace output (best-effort: on the very
-          // first rung the agent holds the bootstrap drill, so this block is skipped; a no-furnace
-          // collectOutput fails harmlessly and ensure(drill) then relies on the held stock).
+        if ((preBuild['iron-plate'] ?? 0) < 20) {
+          // Pull iron-plate from the existing iron chain's furnace output. 20 covers the drill (9
+          // plate: 3 + 6 for 3 gears) AND a raw-ore rung's iron-chest output (8 plate) — a
+          // wooden-chest needs 2 wood (none on a desert map), so coal/stone drop into an iron-chest.
+          // Best-effort: on the very first rung the agent holds the bootstrap drill, so this block is
+          // skipped; a no-furnace collectOutput fails harmlessly and ensure(drill) relies on the stock.
           await ops.collectOutput('stone-furnace', 'iron-plate').catch(() => {})
         }
-        if (((await ops.getState()).inventory['stone'] ?? 0) < 5) {
-          const gs = await ops.ensure('stone', 5)
+        // The drill recipe embeds a stone-furnace (5 stone). A SMELTABLE rung's OUTPUT is ALSO a
+        // furnace (5 stone), so it needs 10 stone total; a raw rung's output is a chest (0 stone), so
+        // 5 stone (drill only). craftAll(drill) consumes the 5 for the embedded furnace first, so
+        // hold the full 10 up front or ensureOutput's furnace later fails "missing 5 stone".
+        const stoneNeed = plate ? 10 : 5
+        if (((await ops.getState()).inventory['stone'] ?? 0) < stoneNeed) {
+          const gs = await ops.ensure('stone', stoneNeed)
           if (!gs.ok) {
-            return { ok: false, error: `automateResource: could not obtain 5 stone for the drill's furnace: ${gs.error}` }
+            return { ok: false, error: `automateResource: could not obtain ${stoneNeed} stone (drill's furnace${plate ? ' + output furnace' : ''}): ${gs.error}` }
           }
         }
       }
@@ -744,16 +730,17 @@ export function createOps(deps: OpsDeps): Ops {
         return { ok: false, error: `automateResource: could not add the drill's ${plate ? 'furnace' : 'chest'} output: ${output.error}` }
       }
       // Fuel the burner-drill always; fuel the furnace too (burner furnaces need coal to smelt).
-      // Use fuelAt (the SPECIFIC drill at its placed position): move_items is player-centred radius
-      // 32 with no distance priority, so `fuel('burner-mining-drill')` would SPLIT the coal with any
-      // other drill within 32 (e.g. the iron drill while placing the coal drill) — the new drill got
-      // 0 and the rung stalled. fuelAt walks the player away from the other drill first.
+      // fuelAt targets the SPECIFIC machine at its placed position via moveItemsAt (the mod-side
+      // move_items_at targets the entity AT (x,y), not every same-name entity within radius 32) —
+      // so the coal isn't SPLIT with a neighbouring same-name machine (the iron drill while fuelling
+      // the coal drill, or the bootstrap furnace while fuelling the iron drill's furnace).
       const fd = await ops.fuelAt('burner-mining-drill', { x: dp?.x ?? 0, y: dp?.y ?? 0 })
       if (!fd.ok) {
         return { ok: false, error: `automateResource: could not fuel the drill: ${fd.error}` }
       }
       if (plate) {
-        const ff = await ops.fuel('stone-furnace', 'coal', 10)
+        const od = output.data as { x?: number, y?: number } | undefined
+        const ff = await ops.fuelAt('stone-furnace', { x: od?.x ?? 0, y: od?.y ?? 0 }, 'coal', 10)
         if (!ff.ok) {
           return { ok: false, error: `automateResource: could not fuel the furnace: ${ff.error}` }
         }
@@ -807,7 +794,7 @@ export function createOps(deps: OpsDeps): Ops {
         return { ok: false, error: `bootstrap: could not place the stone-furnace at (${spot.x},${spot.y}): ${placed.error}` }
       }
       ops.log(`bootstrap: furnace placed at ${spot.x},${spot.y}`)
-      const fuel = await ops.fuel('stone-furnace', 'coal', 10)
+      const fuel = await ops.fuel('stone-furnace', 'coal', 25)
       if (!fuel.ok) {
         return { ok: false, error: `bootstrap: could not fuel the furnace: ${fuel.error}` }
       }

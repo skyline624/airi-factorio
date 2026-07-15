@@ -92,6 +92,10 @@ export interface PlayerParametersMoveItems {
   entity_name: string
   max_count: number
   to_entity: boolean // If true, the items will be moved to the entity, otherwise, the items will be moved to the player's inventory
+  // When set, target the SPECIFIC entity at this position (radius 1.5) instead of every same-name
+  // entity within radius 32 of the player — so fuelling a just-placed drill doesn't split the load
+  // with a neighbouring drill of the same type. Set by the `move_items_at` remote.
+  position?: { x: number, y: number }
 }
 
 export interface PlayerParametersCraftItem {

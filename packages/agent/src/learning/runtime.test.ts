@@ -233,7 +233,7 @@ describe('createOps', () => {
   it('placeFurnaceAtDrill dispatches place_furnace_at_drill and returns reclaimed count', async () => {
     const raw = vi.fn(async () => '{"ok":true,"furnace":"stone-furnace","x":53,"y":-13,"reclaimed":1}')
     const ops = createOps({ raw, settleBus: createSettleBus(1000) })
-    await expect(ops.placeFurnaceAtDrill()).resolves.toEqual({ ok: true, data: { reclaimed: 1 } })
+    await expect(ops.placeFurnaceAtDrill()).resolves.toMatchObject({ ok: true, data: { reclaimed: 1, x: 53, y: -13 } })
     expect(raw).toHaveBeenCalledWith(expect.stringContaining(`'place_furnace_at_drill','stone-furnace'`))
   })
 
@@ -441,6 +441,18 @@ describe('composite primitives (craftAll / ensure / fuel / collectOutput)', () =
     expect(cmds.some(s => s.includes('move_items') && s.includes('coal') && s.includes('stone-furnace'))).toBe(true)
   })
 
+  it('moveItemsAt targets a SPECIFIC entity by position (move_items_at remote carries the x,y)', async () => {
+    const raw = router({ coal: 20 })
+    const bus = createSettleBus(1000)
+    const orig = bus.arm.bind(bus)
+    vi.spyOn(bus, 'arm').mockImplementation(() => { const p = orig(); queueMicrotask(() => bus.settle('completed')); return p })
+    const ops = createOps({ raw, settleBus: bus })
+    await expect(ops.moveItemsAt({ item: 'coal', entity: 'burner-mining-drill', at: { x: 5, y: 7 }, maxCount: 5, toEntity: true })).resolves.toMatchObject({ ok: true })
+    const cmds = raw.mock.calls.map(c => String(c[0]))
+    // the move_items_at remote carries the entity NAME + the exact x,y (not a player-centred radius).
+    expect(cmds.some(s => s.includes('move_items_at') && s.includes('burner-mining-drill') && s.includes('5,7'))).toBe(true)
+  })
+
   it('collectOutput walks and extracts the named item from the machine output', async () => {
     const raw = router({}, () => null)
     const bus = createSettleBus(1000)
@@ -598,6 +610,7 @@ function makeMockOps(): Ops {
     walkTo: ok,
     mineEntity: ok,
     moveItems: ok,
+    moveItemsAt: ok,
     craftItem: ok,
     setRecipe: ok,
     craftAll: ok,

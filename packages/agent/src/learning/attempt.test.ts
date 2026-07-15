@@ -16,6 +16,7 @@ function mockOps(): Ops {
     walkTo: ok,
     mineEntity: ok,
     moveItems: ok,
+    moveItemsAt: ok,
     craftItem: ok,
     setRecipe: ok,
     craftAll: ok,
