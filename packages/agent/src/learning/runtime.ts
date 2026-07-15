@@ -674,12 +674,21 @@ export function createOps(deps: OpsDeps): Ops {
       const preBuild = (await ops.getState()).inventory
       if ((preBuild[drillName] ?? 0) < 1) {
         if ((preBuild['iron-plate'] ?? 0) < 20) {
-          // Pull iron-plate from the existing iron chain's furnace output. 20 covers the drill (9
-          // plate: 3 + 6 for 3 gears) AND a raw-ore rung's iron-chest output (8 plate) — a
-          // wooden-chest needs 2 wood (none on a desert map), so coal/stone drop into an iron-chest.
-          // Best-effort: on the very first rung the agent holds the bootstrap drill, so this block is
-          // skipped; a no-furnace collectOutput fails harmlessly and ensure(drill) relies on the stock.
-          await ops.collectOutput('stone-furnace', 'iron-plate').catch(() => {})
+          // Pull iron-plate from the existing iron chain's furnace output, WAITING for it to smelt
+          // enough if the output is short. The copper rung needs 9 plates for its drill, but the iron
+          // furnace may have smelted only 7-8 when the coal rung took its 17 (the chain is still
+          // smelting its 25-coal batch) → a one-shot collect left the copper rung at "need 9, have 7".
+          // Loop collect + wait until we hold the target (or timeout). 12 smeltable (drill 9 + margin),
+          // 20 raw (drill 9 + iron-chest 8 + margin). Best-effort: the first rung holds the bootstrap
+          // drill, so this block is skipped.
+          const plateTarget = plate ? 12 : 20
+          for (let i = 0; i < 30; i++) {
+            await ops.collectOutput('stone-furnace', 'iron-plate').catch(() => {})
+            if (((await ops.getState()).inventory['iron-plate'] ?? 0) >= plateTarget) {
+              break
+            }
+            await ops.wait(60)
+          }
         }
         // The drill recipe embeds a stone-furnace (5 stone). A SMELTABLE rung's OUTPUT is ALSO a
         // furnace (5 stone), so it needs 10 stone total; a raw rung's output is a chest (0 stone), so
